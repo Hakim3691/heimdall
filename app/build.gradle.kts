@@ -8,8 +8,10 @@ plugins {
 
 val heimdallVersionName: String = providers.gradleProperty("heimdall.versionName").get()
 val heimdallVersionCode: Int = providers.gradleProperty("heimdall.versionCode").get().toInt()
-val llamaDir: String = providers.gradleProperty("llamaDir")
-    .getOrElse(rootProject.file("native/third_party/llama.cpp").absolutePath)
+val llamaDir: String =
+    providers
+        .gradleProperty("llamaDir")
+        .getOrElse(rootProject.file("native/third_party/llama.cpp").absolutePath)
 val buildVulkan: String = providers.gradleProperty("heimdall.vulkan").getOrElse("OFF")
 
 /**
@@ -18,11 +20,12 @@ val buildVulkan: String = providers.gradleProperty("heimdall.vulkan").getOrElse(
  * `assembleRelease` still produces an installable artifact for sideload testing.
  */
 val keystorePropertiesFile = rootProject.file("keystore.properties")
-val keystoreProperties = Properties().apply {
-    if (keystorePropertiesFile.exists()) {
-        keystorePropertiesFile.inputStream().use { stream -> load(stream) }
+val keystoreProperties =
+    Properties().apply {
+        if (keystorePropertiesFile.exists()) {
+            keystorePropertiesFile.inputStream().use { stream -> load(stream) }
+        }
     }
-}
 
 android {
     namespace = "com.heimdall"
@@ -44,17 +47,23 @@ android {
                 // reader uses try/catch and llama.cpp uses dynamic_cast. Both stay at the
                 // NDK defaults (enabled) for every native target.
                 cppFlags += listOf("-std=c++17")
-                arguments += listOf(
-                    "-DHEIMDALL_BUILD_VULKAN=$buildVulkan",
-                    "-DLLAMA_DIR=$llamaDir",
-                    "-DANDROID_STL=c++_shared",
-                )
+                arguments +=
+                    listOf(
+                        "-DHEIMDALL_BUILD_VULKAN=$buildVulkan",
+                        "-DLLAMA_DIR=$llamaDir",
+                        "-DANDROID_STL=c++_shared",
+                    )
                 targets += "heimdall"
             }
         }
-        val abis = providers.gradleProperty("heimdall.abis").orNull
-            ?.split(',')?.map(String::trim)?.filter(String::isNotEmpty)
-            ?: listOf("arm64-v8a", "x86_64")
+        val abis =
+            providers
+                .gradleProperty("heimdall.abis")
+                .orNull
+                ?.split(',')
+                ?.map(String::trim)
+                ?.filter(String::isNotEmpty)
+                ?: listOf("arm64-v8a", "x86_64")
         ndk {
             // arm64-v8a is the shipping target; x86_64 keeps emulator/CI instrumented runs possible.
             abiFilters += abis

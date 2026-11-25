@@ -60,7 +60,7 @@ class NativeVlmEngine(
             return false
         }
         initialised = true
-        log.info(TAG, "VLM ready (${backendDescription}) ctx=${config.contextSize} threads=${config.threads}")
+        log.info(TAG, "VLM ready ($backendDescription) ctx=${config.contextSize} threads=${config.threads}")
         true
     }
 

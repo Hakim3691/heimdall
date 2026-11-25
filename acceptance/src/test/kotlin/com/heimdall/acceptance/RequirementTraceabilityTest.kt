@@ -1,8 +1,8 @@
 package com.heimdall.acceptance
 
 import com.google.common.truth.Truth.assertThat
-import java.io.File
 import org.junit.jupiter.api.Test
+import java.io.File
 
 /**
  * Traceability gate: a P0 requirement without an executable scenario fails the build.
@@ -12,7 +12,14 @@ import org.junit.jupiter.api.Test
  */
 class RequirementTraceabilityTest {
     private val requiredTags = setOf(
-        "FR-01", "FR-02", "FR-03", "FR-04", "FR-05", "FR-06", "FR-07", "NFR-1",
+        "FR-01",
+        "FR-02",
+        "FR-03",
+        "FR-04",
+        "FR-05",
+        "FR-06",
+        "FR-07",
+        "NFR-1",
     )
 
     @Test

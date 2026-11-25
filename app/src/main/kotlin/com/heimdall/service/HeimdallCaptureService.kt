@@ -163,7 +163,7 @@ class HeimdallCaptureService : Service() {
         graph.settings.hasStartedCapture = true
 
         captureJob = serviceScope.launch { captureLoop() }
-        graph.log.info(TAG, "capture started ${width}x${height} backend=${engine?.backendDescription}")
+        graph.log.info(TAG, "capture started ${width}x$height backend=${engine?.backendDescription}")
         isRunning = true
     }
 
@@ -374,7 +374,8 @@ class HeimdallCaptureService : Service() {
         var isRunning: Boolean = false
             private set
 
-        /** Builds the service start intent carrying a freshly granted projection token. */        fun startIntent(context: Context, resultCode: Int, data: Intent): Intent =
+        /** Builds the service start intent carrying a freshly granted projection token. */
+        fun startIntent(context: Context, resultCode: Int, data: Intent): Intent =
             Intent(context, HeimdallCaptureService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_RESULT_CODE, resultCode)
