@@ -1,4 +1,3 @@
-<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Heimdall</string>
     <string name="accessibility_service_label">Heimdall gesture observer</string>
@@ -14,11 +13,36 @@
     <string name="onboarding_start">Start Heimdall</string>
     <string name="onboarding_stop">Stop Heimdall</string>
     <string name="onboarding_refresh">Check again</string>
+    <string name="onboarding_open">Open</string>
+    <string name="onboarding_next_step">Next: %1$s</string>
+    <string name="onboarding_next_status">Next: %1$s.</string>
+    <string name="onboarding_ready">Ready to capture.</string>
+    <string name="onboarding_missing_models">Not ready: %1$s.</string>
     <string name="onboarding_status_granted">Granted</string>
     <string name="onboarding_status_missing">Needs attention</string>
     <string name="onboarding_privacy_note">Heimdall has no INTERNET permission. Frames are processed by a local model and never written to disk.</string>
-    <string name="onboarding_models_hint">Place both GGUF files in /sdcard/Heimdall/models/ (see README).</string>
     <string name="onboarding_export_logs">Export diagnostics</string>
+
+    <string name="onboarding_models_title">Model files</string>
+    <string name="onboarding_models_hint">Choose both GGUF files. Heimdall reads them where they are — nothing is copied, moved or uploaded.</string>
+    <string name="onboarding_models_help">Model setup</string>
+    <string name="onboarding_models_help_body">Heimdall needs the two MiniCPM-V 2.6 files:\n\n1. minicpm-v-2_6-Q4_K_M.gguf (about 5.5 GB)\n2. mmproj-f16.gguf (about 1 GB)\n\nDownload them from openbmb/MiniCPM-V-2_6 on Hugging Face to the phone (for example Downloads), then tap “Choose file” here and pick each one.\n\nThe files stay exactly where they are: the picker grants read access only, so Heimdall never copies or deletes them. The README mentioned in earlier builds lives at the root of the project repository, github.com/Hakim3691/heimdall (section “Models are never committed”).\n\nCloud-only documents cannot be used because they must be memory-mapped from local storage.</string>
+    <string name="onboarding_choose">Choose file</string>
+    <string name="onboarding_replace">Replace</string>
+    <string name="onboarding_pick_language">Choose the language weights</string>
+    <string name="onboarding_pick_vision">Choose the vision projector</string>
+    <string name="onboarding_model_missing">not selected</string>
+    <string name="onboarding_model_ready">Ready</string>
+    <string name="onboarding_model_ready_name">%1$s · ready</string>
+    <string name="onboarding_model_not_ready">%1$s · %2$s</string>
+    <string name="onboarding_model_pick_failed">That file cannot be used: %1$s. Pick a local copy of the GGUF file.</string>
+    <string name="onboarding_issue_missing">unreadable or not a local file</string>
+    <string name="onboarding_issue_empty">empty</string>
+    <string name="onboarding_issue_not_gguf">not a GGUF model</string>
+    <string name="onboarding_issue_truncated">incomplete download</string>
+    <string name="onboarding_issue_storage">not enough free space</string>
+    <string name="onboarding_accessibility_help">Android blocks this toggle for sideloaded apps. If Settings says “App was denied access”, open App info, tap the ⋮ menu and choose “Allow restricted settings”, then enable the gesture observer again.</string>
+    <string name="onboarding_open_app_info">Open App info</string>
 
     <string name="notification_channel_name">Ambient capture</string>
     <string name="notification_channel_description">Shown while Heimdall is observing the screen</string>

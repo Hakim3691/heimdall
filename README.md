@@ -15,7 +15,7 @@ network permission at all.
 | FR-04 frames | `MediaProjection` foreground service, downsampled surface |
 | FR-05 gating | JSON-schema gate drops `intervene == false` and low-confidence answers |
 | FR-06 thermals | `PowerManager` thermal listeners scale latency / pause capture |
-| FR-07 onboarding | model storage checks and mmap load from `/sdcard/Heimdall/models/` |
+| FR-07 onboarding | system file picker for the two GGUF files, validated and mmapped in place (zero copy) |
 | NFR-1 | battery/thermal budget is a benchmark gate on a named reference device |
 
 ## Privacy
@@ -61,11 +61,32 @@ Release signing falls back to the debug key when `keystore.properties` is absent
 (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`) or the CI secrets for a stable
 release identity.
 
-Models are never committed; fetch them separately and place them in
-`/sdcard/Heimdall/models/`:
+Models are never committed or bundled. Heimdall reads the two MiniCPM-V 2.6 GGUF files **in place**,
+straight from wherever you downloaded them:
 
-* `minicpm-v-2_6-Q4_K_M.gguf`
-* `mmproj-model-f16.gguf`
+* `minicpm-v-2_6-Q4_K_M.gguf` (~5.5 GB)
+* `mmproj-f16.gguf` (~1 GB)
+
+Download them from `openbmb/MiniCPM-V-2_6` on Hugging Face to the phone, then use **Model files →
+Choose file** in the app and pick each one. The picker grants read-only access, the file is mapped
+through `/proc/self/fd/<n>`, and the raw descriptors stay open only for the capture session — nothing
+is copied, moved, uploaded or written to disk, and the files can stay in Downloads or be deleted at
+any time. Cloud-only documents are rejected because they cannot be memory-mapped.
+
+Earlier builds told you to copy the files to `/sdcard/Heimdall/models/`. Scoped storage made that
+unreadable on Android 12+, which is why the model row stayed red; that path is no longer used or
+required.
+
+## First run
+
+Android does not grant any of Heimdall's privileges at install time: overlay, accessibility and
+screen capture are Settings toggles or per-session system dialogs. The app therefore chains the
+platform screens automatically on first launch — notification permission, overlay, accessibility,
+model picker, then the cast prompt — and explains each obstacle inline.
+
+Sideloaded builds must first be allowed to use restricted settings: **App info → ⋮ → Allow restricted
+settings**, otherwise Android answers the accessibility toggle with "App was denied access" and the
+service can never turn on.
 
 ## Tests
 

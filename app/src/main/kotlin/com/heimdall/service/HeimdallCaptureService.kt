@@ -99,6 +99,15 @@ class HeimdallCaptureService : Service() {
             return START_NOT_STICKY
         }
 
+        // A second consent can arrive while a session is live (e.g. the user taps Start again).
+        // Starting another projection would overwrite the fields below and the old callback would
+        // then tear down the new session, so an extra start is ignored outright.
+        if (isRunning) {
+            graph.log.info(TAG, "capture already running; ignoring a second start request")
+            startForegroundNotification(getString(R.string.notification_text))
+            return START_NOT_STICKY
+        }
+
         startForegroundNotification(getString(R.string.notification_title))
 
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
@@ -124,6 +133,11 @@ class HeimdallCaptureService : Service() {
     // ---- startup ---------------------------------------------------------------------------
 
     private fun beginCapture(resultCode: Int, data: Intent) {
+        // Defensive: never stack a second virtual display on top of a live session.
+        if (isRunning) {
+            graph.log.warn(TAG, "beginCapture ignored: a capture session is already active")
+            return
+        }
         val manager = getSystemService(MediaProjectionManager::class.java)
         if (manager == null) {
             stopAmbient("no MediaProjectionManager")

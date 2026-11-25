@@ -21,6 +21,12 @@ class NativeVlmEngine(
     private val log: HeimdallLog = HeimdallLog.NONE,
     private val clock: Clock = Clock.MONOTONIC,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    /**
+     * Zero-copy document descriptors that keep [modelPath] and [mmprojPath] open, or null when the
+     * weights are ordinary files. Closed together with the engine so `/proc/self/fd/<n>` never
+     * outlives the session that resolved it.
+     */
+    private val mountedFiles: AutoCloseable? = null,
 ) : VlmEngine {
     private val lock = Any()
     private var initialised = false
@@ -96,6 +102,10 @@ class NativeVlmEngine(
                     .onFailure { log.warn(TAG, "nativeRelease threw", it) }
             }
             initialised = false
+            mountedFiles?.let { mount ->
+                runCatching { mount.close() }
+                    .onFailure { log.warn(TAG, "closing model descriptors threw", it) }
+            }
             log.info(TAG, "VLM released")
         }
     }

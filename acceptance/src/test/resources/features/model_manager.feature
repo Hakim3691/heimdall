@@ -1,7 +1,8 @@
 @FR-07
 Feature: Local model storage
-  Heimdall mmaps two GGUF files from /sdcard/Heimdall/models/. A truncated download or a
-  non-GGUF file must be reported before capture starts, never discovered mid-inference.
+  Heimdall mmaps the two GGUF files the user picks in the system file picker, read in place with
+  zero copy. A truncated download or a non-GGUF file must be reported before capture starts, never
+  discovered mid-inference.
 
   Scenario: Both model files present and valid
     Given a language model of 5 GB with a GGUF header

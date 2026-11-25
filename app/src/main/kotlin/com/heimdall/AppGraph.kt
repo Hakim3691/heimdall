@@ -12,12 +12,12 @@ import com.heimdall.engine.vlm.NativeVlmEngine
 import com.heimdall.engine.vlm.VlmEngine
 import com.heimdall.model.Anchor
 import com.heimdall.model.HeimdallConfig
-import com.heimdall.model.ModelFile
+import com.heimdall.model.ModelValidation
 import com.heimdall.model.OverlayConfig
 import com.heimdall.model.TextMetrics
 import com.heimdall.model.VlmConfig
 import com.heimdall.settings.SettingsStore
-import com.heimdall.storage.ModelRepository
+import com.heimdall.storage.ModelStore
 import com.heimdall.ui.overlay.OverlayWindowController
 import java.io.File
 
@@ -43,10 +43,8 @@ class AppGraph(context: Context) {
 
     val settings: SettingsStore = SettingsStore(appContext)
 
-    val models: ModelRepository = ModelRepository(
-        modelsDir = File("/sdcard/Heimdall/models"),
-        log = log,
-    )
+    /** Model weights come from the documents the user picked in the system file picker. */
+    val models: ModelStore = ModelStore(appContext, settings, log)
 
     /** Configuration snapshot; overlay options that the user can toggle are read from settings. */
     val config: HeimdallConfig
@@ -72,30 +70,37 @@ class AppGraph(context: Context) {
      */
     fun createEngine(): VlmEngine {
         val validation = models.validateAll()
-        val languagePath = models.pathFor(ModelFile.LANGUAGE)
-        val visionPath = models.pathFor(ModelFile.VISION)
-        val ready = validation.values.all { it is com.heimdall.model.ModelValidation.Ready }
-        return if (ready) {
-            NativeVlmEngine(
-                modelPath = languagePath,
-                mmprojPath = visionPath,
-                config = config.vlm,
-                log = log,
-                clock = clock,
-            )
-        } else if (BuildConfig.DEBUG) {
+        val ready = validation.values.all { it is ModelValidation.Ready }
+        if (ready) {
+            // Zero copy: the selected documents stay where they are and the mounted descriptors
+            // keep their /proc/self/fd paths valid for the whole session.
+            val mount = models.mount()
+            if (mount != null) {
+                return NativeVlmEngine(
+                    modelPath = mount.languagePath,
+                    mmprojPath = mount.visionPath,
+                    config = config.vlm,
+                    log = log,
+                    clock = clock,
+                    mountedFiles = mount,
+                )
+            }
+            log.warn(TAG, "selected model documents could not be mounted for inference")
+        }
+        if (BuildConfig.DEBUG) {
             log.warn(TAG, "model files unavailable; using scripted engine (debug build only)")
-            FakeVlmEngine().apply {
+            return FakeVlmEngine().apply {
                 enqueue(FakeVlmEngine.intervention("Tap Allow in the dialog to continue"))
             }
-        } else {
-            // Release: still construct the native engine so it can report why it is unavailable.
-            NativeVlmEngine(languagePath, visionPath, config.vlm, log, clock)
         }
+        // Release: still construct the native engine so it can report why it is unavailable.
+        val reason = validation.entries.joinToString { (file, verdict) -> "${file.fileName}=$verdict" }
+        log.warn(TAG, "model files unavailable; starting native engine without weights: $reason")
+        return NativeVlmEngine("", "", config.vlm, log, clock)
     }
 
     fun nativeStatus(): String = runCatching {
-        "nativeVlm=" + (models.takeIf { it.exists(ModelFile.LANGUAGE) } != null)
+        "nativeVlm=${models.allReady()}"
     }.getOrDefault("nativeVlm=unknown")
 
     /** Diagnostics bundle for the export flow: environment + recent log lines. */
