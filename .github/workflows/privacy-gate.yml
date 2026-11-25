@@ -17,8 +17,10 @@ jobs:
       - name: Fail if a network permission is declared
         run: |
           set -euo pipefail
+          # Only a real <uses-permission> declaration counts; the manifest also *documents* the
+          # absence of INTERNET in a comment, which must not trip this gate.
           if grep -RIn --include='AndroidManifest.xml' \
-              -E 'android\.permission\.(INTERNET|ACCESS_NETWORK_STATE|ACCESS_WIFI_STATE)' .; then
+              -E '<uses-permission[^>]*android:name="android\.permission\.(INTERNET|ACCESS_NETWORK_STATE|ACCESS_WIFI_STATE)"' .; then
             echo '::error::Heimdall must stay offline: network permission declared'
             exit 1
           fi
