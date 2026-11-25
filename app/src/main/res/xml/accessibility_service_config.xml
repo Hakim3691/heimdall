@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Heimdall only needs to know *that* the user interacted, not what was said. The service
+    therefore requests the minimum event surface: clicks, scrolls, text changes and window state.
+    It does not request flagRetrieveInteractiveWindows, does not read node text into logs, and has
+    no accessibility-capability to perform gestures or read passwords.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeViewClicked|typeViewScrolled|typeViewTextChanged|typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews"
+    android:canPerformGestures="false"
+    android:canRequestFilterKeyEvents="false"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100"
+    android:settingsActivity="com.heimdall.ui.OnboardingActivity" />

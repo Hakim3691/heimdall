@@ -1,0 +1,68 @@
+# Detekt configuration for Heimdall.
+# Philosophy: fail on correctness and maintainability problems, stay quiet about stylistic
+# preferences that ktlint/Spotless already enforces.
+build:
+  maxIssues: 0
+  excludeCorrectable: false
+
+complexity:
+  LongParameterList:
+    active: false
+  TooManyFunctions:
+    active: false
+  LongMethod:
+    active: false
+  CyclomaticComplexMethod:
+    active: true
+    threshold: 20
+
+naming:
+  FunctionNaming:
+    ignoreAnnotated:
+      - Composable
+
+style:
+  MagicNumber:
+    active: false
+  MaxLineLength:
+    active: true
+    maxLineLength: 130
+    excludeCommentStatements: true
+  ReturnCount:
+    active: false
+  WildcardImport:
+    active: true
+  UnusedPrivateMember:
+    active: true
+    ignoreAnnotated:
+      - Composable
+  ForbiddenComment:
+    active: true
+    comments:
+      - reason: "Blocking markers must not survive review"
+        value: "FIXME:"
+  LoopWithTooManyJumpStatements:
+    active: false
+  ThrowsCount:
+    active: false
+
+potential-bugs:
+  UnsafeCallOnNullableType:
+    active: true
+  ImplicitDefaultLocale:
+    active: true
+
+exceptions:
+  TooGenericExceptionCaught:
+    active: false
+  SwallowedException:
+    active: true
+  InstanceOfCheckForException:
+    active: false
+  ThrowingExceptionsWithoutMessageOrCause:
+    active: true
+
+empty-blocks:
+  EmptyFunctionBlock:
+    active: true
+    ignoreOverridden: true

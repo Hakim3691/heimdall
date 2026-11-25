@@ -1,0 +1,42 @@
+### Gradle / Android
+.gradle/
+build/
+*/build/
+**/build/
+captures/
+.cxx/
+.externalNativeBuild/
+local.properties
+*.iml
+.idea/
+.kotlin/
+out/
+
+### Native
+native/third_party/llama.cpp/
+native/**/.cxx/
+*.so
+*.a
+*.o
+
+### Signing / secrets
+keystore.properties
+release-keystore.properties
+.env
+*.jks.private
+
+### Model artifacts (multi-GB GGUF weights are never committed)
+models/
+*.gguf
+*.ggml
+
+### Reports
+reports/
+**/reports/
+jacoco.exec
+**/jacoco.exec
+detekt-baseline.xml.bak
+
+### OS
+.DS_Store
+Thumbs.db

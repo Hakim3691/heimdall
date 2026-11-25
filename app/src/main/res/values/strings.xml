@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Heimdall</string>
+    <string name="accessibility_service_label">Heimdall gesture observer</string>
+    <string name="accessibility_service_description">Detects when you pause on a screen so Heimdall can offer a short hint. Heimdall reads no text from other apps and never leaves the device.</string>
+
+    <string name="onboarding_title">Heimdall</string>
+    <string name="onboarding_subtitle">An on-device co-pilot that offers a short hint when a screen stops making sense. No network, no accounts, no telemetry.</string>
+    <string name="onboarding_step_overlay">Draw hints over other apps</string>
+    <string name="onboarding_step_accessibility">Notice when you pause</string>
+    <string name="onboarding_step_notifications">Keep the capture session visible</string>
+    <string name="onboarding_step_models">Model files present</string>
+    <string name="onboarding_step_projection">Allow screen capture</string>
+    <string name="onboarding_start">Start Heimdall</string>
+    <string name="onboarding_stop">Stop Heimdall</string>
+    <string name="onboarding_refresh">Check again</string>
+    <string name="onboarding_status_granted">Granted</string>
+    <string name="onboarding_status_missing">Needs attention</string>
+    <string name="onboarding_privacy_note">Heimdall has no INTERNET permission. Frames are processed by a local model and never written to disk.</string>
+    <string name="onboarding_models_hint">Place both GGUF files in /sdcard/Heimdall/models/ (see README).</string>
+    <string name="onboarding_export_logs">Export diagnostics</string>
+
+    <string name="notification_channel_name">Ambient capture</string>
+    <string name="notification_channel_description">Shown while Heimdall is observing the screen</string>
+    <string name="notification_title">Heimdall is watching for friction</string>
+    <string name="notification_text">Tap to manage. Screen frames stay on this device.</string>
+    <string name="notification_stop">Stop</string>
+
+    <string name="capture_permission_title">Heimdall needs your screen</string>
+    <string name="capture_permission_body">Choose “Start now” on the Android prompt. Capture stops when you tap Stop or reboot the device.</string>
+    <string name="thermal_paused">Paused: device is too warm</string>
+</resources>

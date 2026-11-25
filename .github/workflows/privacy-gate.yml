@@ -1,0 +1,36 @@
+name: privacy-gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  no-network:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if a network permission is declared
+        run: |
+          set -euo pipefail
+          if grep -RIn --include='AndroidManifest.xml' \
+              -E 'android\.permission\.(INTERNET|ACCESS_NETWORK_STATE|ACCESS_WIFI_STATE)' .; then
+            echo '::error::Heimdall must stay offline: network permission declared'
+            exit 1
+          fi
+          echo 'no network permissions declared'
+
+      - name: Fail if networking APIs appear in Kotlin sources
+        run: |
+          set -euo pipefail
+          if grep -RIn --include='*.kt' \
+              -E '\b(OkHttpClient|HttpURLConnection|java\.net\.(Socket|URL)|kotlinx\.coroutines\.io|Retrofit)\b' \
+              --exclude-dir=build .; then
+            echo '::error::Networking API found in app sources'
+            exit 1
+          fi
+          echo 'no networking APIs in sources'

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Heimdall" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#121014</item>
+        <item name="android:navigationBarColor">#121014</item>
+        <item name="android:windowBackground">#121014</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:colorAccent">#7CC4FF</item>
+    </style>
+</resources>
