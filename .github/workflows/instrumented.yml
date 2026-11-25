@@ -25,6 +25,9 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Fetch pinned llama.cpp
+        run: scripts/fetch-llama.sh
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
