@@ -78,8 +78,15 @@ object ModelValidator {
     /** How much of the file the platform adapter should hand over for metadata parsing. */
     const val METADATA_PREFIX_BYTES: Int = 64 * 1024
 
-    /** llama.cpp's architecture name for the supported language model. */
-    private val SUPPORTED_LANGUAGE_ARCHITECTURES = setOf("minicpmv")
+    /**
+     * GGUF architectures accepted as Heimdall's language weights.
+     *
+     * MiniCPM-V 2.6 is Qwen2-based: the official `ggml-model-Q4_K_M.gguf` reports
+     * `general.architecture = qwen2` (the multimodal wiring lives in the separate mmproj), while some
+     * conversions use llama.cpp's `minicpmv` name. Both are accepted; anything else (e.g. a ternary /
+     * Bonsai build) is rejected before the load.
+     */
+    private val SUPPORTED_LANGUAGE_ARCHITECTURES = setOf("qwen2", "minicpmv")
 
     /** ggml's name for the multimodal projector graph. */
     private const val VISION_ARCHITECTURE = "clip"

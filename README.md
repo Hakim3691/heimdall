@@ -75,9 +75,10 @@ copied, moved, uploaded or written to disk, and the files can stay in Downloads 
 any time. Cloud-only documents are rejected because they cannot be memory-mapped.
 
 Only the MiniCPM-V 2.6 pair is supported. The GGUF metadata prefix is read at pick time and a file
-whose `general.architecture` is not `minicpmv` (language weights) or `clip`/vision keys (projector)
-is rejected immediately — a valid-looking but incompatible file such as a ternary/Bonsai build no
-longer reports `ready` and then fails inside llama.cpp after a multi-gigabyte load.
+whose `general.architecture` is not `qwen2`/`minicpmv` (MiniCPM-V 2.6 is Qwen2-based, and the
+official conversion reports `qwen2`) or `clip`/vision keys for the projector is rejected immediately
+— a valid-looking but incompatible file such as a ternary/Bonsai build no longer reports `ready` and
+then fails inside llama.cpp after a multi-gigabyte load.
 
 Earlier builds told you to copy the files to `/sdcard/Heimdall/models/`. Scoped storage made that
 unreadable on Android 12+, which is why the model row stayed red; that path is no longer used or

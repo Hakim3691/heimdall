@@ -32,6 +32,11 @@ Feature: Local model storage
     Then the model validation result is ready
 
   Scenario: The recommended MiniCPM-V architecture is accepted
+    Given a language model of 5 GB with GGUF architecture "qwen2"
+    And 20 GB of free storage
+    Then the model validation result is ready
+
+  Scenario: A minicpmv-architecture conversion is accepted as well
     Given a language model of 5 GB with GGUF architecture "minicpmv"
     And 20 GB of free storage
     Then the model validation result is ready
@@ -42,6 +47,6 @@ Feature: Local model storage
     Then the model validation reports INCOMPATIBLE_MODEL
 
   Scenario: A weights file offered as the vision projector is rejected
-    Given a vision projector of 1 GB with GGUF architecture "minicpmv"
+    Given a vision projector of 1 GB with GGUF architecture "qwen2"
     And 20 GB of free storage
     Then the model validation reports INCOMPATIBLE_MODEL
