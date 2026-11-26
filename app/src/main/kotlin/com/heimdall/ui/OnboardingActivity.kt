@@ -159,7 +159,11 @@ class OnboardingActivity : Activity() {
         footer.addView(
             Button(this).apply {
                 text = getString(R.string.onboarding_refresh)
-                setOnClickListener { refreshUi() }
+                setOnClickListener {
+                    // Re-read both documents instead of trusting the cached verdict.
+                    graph.models.invalidate()
+                    refreshUi()
+                }
             },
             LinearLayout.LayoutParams(0, WRAP, 1f),
         )
@@ -220,12 +224,30 @@ class OnboardingActivity : Activity() {
                     getString(R.string.onboarding_next_status, getString(labels.getValue(next)))
                 },
             )
-            val missing = graph.models.absent()
-            if (missing.isNotEmpty()) {
+            val validations = graph.models.validateAll()
+            val problems = validations.entries
+                .filter { (_, validation) -> validation !is ModelValidation.Ready }
+                .map { (file, validation) -> problemText(file, validation as ModelValidation.Invalid) }
+                .toMutableList()
+            graph.models.pairIssue(validations)?.let { issue ->
+                problems += getString(R.string.onboarding_pair_warning, issue.detail.orEmpty())
+            }
+            if (problems.isNotEmpty()) {
                 append(' ')
-                append(getString(R.string.onboarding_missing_models, missing.joinToString { it.fileName }))
+                append(getString(R.string.onboarding_missing_models, problems.joinToString("; ")))
             }
         }
+    }
+
+    /**
+     * One status-line entry for a rejected file: what was actually picked, plus the real reason.
+     * The old line printed the canonical slot name (`minicpm-v-2_6-Q4_K_M.gguf`) even when a Bonsai
+     * file occupied the slot, which read as if the recommended download were missing.
+     */
+    private fun problemText(file: ModelFile, invalid: ModelValidation.Invalid): String {
+        val name = graph.models.displayName(file) ?: file.description
+        val reason = invalid.detail?.takeIf { it.isNotBlank() } ?: issueLabel(invalid)
+        return getString(R.string.onboarding_model_problem, name, reason)
     }
 
     private fun buildStepRow(
@@ -246,16 +268,21 @@ class OnboardingActivity : Activity() {
             textSize = 15f
         }
         row.addView(text, LinearLayout.LayoutParams(0, WRAP, 1f))
+        // Projection consent is per session by platform rule, so an inactive session is a normal
+        // state, not a warning: it is requested when capture starts.
+        val inactive = step == OnboardingStep.PROJECTION && !granted
         row.addView(
             TextView(this).apply {
                 this.text = when {
                     granted -> getString(R.string.onboarding_status_granted)
+                    inactive -> getString(R.string.onboarding_status_inactive)
                     optional -> getString(R.string.onboarding_status_optional)
                     else -> getString(R.string.onboarding_status_missing)
                 }
                 setTextColor(
                     when {
                         granted -> ACCENT
+                        inactive -> TEXT_FAINT
                         optional -> TEXT_FAINT
                         else -> WARN
                     },
@@ -366,6 +393,33 @@ class OnboardingActivity : Activity() {
             },
             LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(4) },
         )
+        // The runtime probe is the only authoritative verdict: metadata can only reject what it can
+        // prove, while llama.cpp decides whether this exact pair loads.
+        modelsContainer.addView(
+            TextView(this).apply {
+                text = graph.modelProbe ?: getString(R.string.onboarding_probe_none)
+                setTextColor(TEXT_FAINT)
+                textSize = 12f
+                setPadding(0, dp(8), 0, 0)
+            },
+        )
+        modelsContainer.addView(
+            Button(this).apply {
+                text = getString(R.string.onboarding_test_pair)
+                isEnabled = graph.models.uriFor(ModelFile.LANGUAGE) != null &&
+                    graph.models.uriFor(ModelFile.VISION) != null &&
+                    !HeimdallCaptureService.isRunning
+                setOnClickListener {
+                    Toast.makeText(
+                        this@OnboardingActivity,
+                        R.string.onboarding_probe_running,
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    graph.probeModels { runOnUiThread { refreshUi() } }
+                }
+            },
+            LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(4) },
+        )
     }
 
     private fun buildModelRow(file: ModelFile, validation: ModelValidation): View {
@@ -418,6 +472,7 @@ class OnboardingActivity : Activity() {
             ModelIssue.TRUNCATED -> getString(R.string.onboarding_issue_truncated)
             ModelIssue.INSUFFICIENT_STORAGE -> getString(R.string.onboarding_issue_storage)
             ModelIssue.INCOMPATIBLE_MODEL -> getString(R.string.onboarding_issue_incompatible)
+            ModelIssue.INCOMPATIBLE_PAIR -> getString(R.string.onboarding_issue_pair)
         }
     }
 
@@ -696,21 +751,59 @@ class OnboardingActivity : Activity() {
         if (resultCode == RESULT_OK && uri != null) {
             graph.models.remember(file, uri)
             val validation = graph.models.validateAll()[file]
-            if (validation !is ModelValidation.Ready) {
-                val reason = validation?.let { issueLabel(it) }.orEmpty()
-                Toast.makeText(
+            val invalid = validation as? ModelValidation.Invalid
+            val pairIssue = graph.models.pairIssue()
+            when {
+                invalid != null -> Toast.makeText(
                     this,
-                    getString(R.string.onboarding_model_pick_failed, reason),
+                    pickFailureMessage(invalid),
                     Toast.LENGTH_LONG,
                 ).show()
-            } else {
-                // Continue straight to the other file so setup stays a single sequence.
-                val other = ModelFile.entries.firstOrNull { it != file && graph.models.uriFor(it) == null }
-                if (other != null) pickModel(other)
+
+                pairIssue != null -> Toast.makeText(
+                    this,
+                    getString(
+                        R.string.onboarding_model_pick_mismatch,
+                        pairIssue.detail.orEmpty(),
+                    ),
+                    Toast.LENGTH_LONG,
+                ).show()
+
+                else -> {
+                    // Continue straight to the other file so setup stays a single sequence.
+                    val other = ModelFile.entries.firstOrNull {
+                        it != file && graph.models.uriFor(it) == null
+                    }
+                    if (other != null) {
+                        pickModel(other)
+                    } else {
+                        // Both files are plausible: ask the runtime to prove the pair loads.
+                        graph.probeModels { runOnUiThread { refreshUi() } }
+                    }
+                }
             }
         }
         refreshUi()
     }
+
+    /** Per-issue wording: an architecture rejection is not a "pick a local copy" problem. */
+    private fun pickFailureMessage(validation: ModelValidation.Invalid): String =
+        when (validation.issue) {
+            ModelIssue.INCOMPATIBLE_PAIR -> getString(
+                R.string.onboarding_model_pick_mismatch,
+                validation.detail.orEmpty(),
+            )
+
+            ModelIssue.INCOMPATIBLE_MODEL -> getString(
+                R.string.onboarding_model_pick_incompatible,
+                validation.detail ?: issueLabel(validation),
+            )
+
+            else -> getString(
+                R.string.onboarding_model_pick_failed,
+                validation.detail ?: issueLabel(validation),
+            )
+        }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)

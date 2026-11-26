@@ -71,25 +71,65 @@ class ModelSteps(private val world: World) {
         header = ggufWithArchitecture(architecture)
     }
 
+    @Given("a vision projector of {int} GB with GGUF architecture {string} and projector type {string}")
+    fun visionProjectorWithType(size: Int, architecture: String, type: String) {
+        file = ModelFile.VISION
+        sizeBytes = size * gigabyte
+        header = ggufWithMetadata(architecture, type)
+    }
+
+    /**
+     * Pair scenarios: validate one file of each role and then ask the validator for the joint
+     * verdict, which is what onboarding and the capture service actually gate on.
+     */
+    @Given("language weights {string} with projector type {string}")
+    fun pair(languageArchitecture: String, projector: String) {
+        val language = ModelValidator.validate(
+            ModelFile.LANGUAGE,
+            5 * gigabyte,
+            ggufWithMetadata(languageArchitecture, null),
+            20 * gigabyte,
+        )
+        val vision = ModelValidator.validate(
+            ModelFile.VISION,
+            gigabyte,
+            ggufWithMetadata("clip", projector),
+            20 * gigabyte,
+        )
+        world.validation = ModelValidator.validatePairOrReady(language, vision)
+    }
+
     /**
      * A minimal GGUF v3 metadata prefix: magic, no tensors, one string key `general.architecture`.
      * This is the shape [ModelValidator] reads when deciding compatibility.
      */
-    private fun ggufWithArchitecture(architecture: String): ByteArray {
-        val key = "general.architecture".toByteArray()
-        val value = architecture.toByteArray()
-        return ByteBuffer.allocate(4 + 4 + 8 + 8 + 8 + key.size + 4 + 8 + value.size)
-            .order(ByteOrder.LITTLE_ENDIAN)
+    private fun ggufWithArchitecture(architecture: String): ByteArray =
+        ggufWithMetadata(architecture, projectorType = null)
+
+    /**
+     * A GGUF v3 metadata prefix with `general.architecture` and, when [projectorType] is not null,
+     * `clip.projector_type`. Both are the keys [ModelValidator] reads for a compatibility verdict.
+     */
+    private fun ggufWithMetadata(architecture: String, projectorType: String?): ByteArray {
+        val entries = buildList {
+            add("general.architecture" to architecture)
+            projectorType?.let { add("clip.projector_type" to it) }
+        }
+        val size = 4 + 4 + 8 + 8 +
+            entries.sumOf { (key, value) -> 8 + key.toByteArray().size + 4 + 8 + value.toByteArray().size }
+        val buffer = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN)
             .put("GGUF".toByteArray())
             .putInt(3)
             .putLong(0L)
-            .putLong(1L)
-            .putLong(key.size.toLong())
-            .put(key)
-            .putInt(8)
-            .putLong(value.size.toLong())
-            .put(value)
-            .array()
+            .putLong(entries.size.toLong())
+        for ((key, value) in entries) {
+            val keyBytes = key.toByteArray()
+            val valueBytes = value.toByteArray()
+            buffer.putLong(keyBytes.size.toLong()).put(keyBytes)
+            buffer.putInt(8)
+            buffer.putLong(valueBytes.size.toLong()).put(valueBytes)
+        }
+        return buffer.array()
     }
 
     @Given("{int} GB of free storage")

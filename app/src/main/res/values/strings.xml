@@ -18,6 +18,9 @@
     <string name="onboarding_next_status">Next: %1$s.</string>
     <string name="onboarding_ready">Ready to capture.</string>
     <string name="onboarding_missing_models">Not ready: %1$s.</string>
+    <string name="onboarding_model_problem">%1$s — %2$s</string>
+    <string name="onboarding_pair_warning">Weights and projector do not match: %1$s</string>
+    <string name="onboarding_status_inactive">Not active</string>
     <string name="onboarding_status_granted">Granted</string>
     <string name="onboarding_status_missing">Needs attention</string>
     <string name="onboarding_status_optional">Optional</string>
@@ -26,12 +29,15 @@
 
     <string name="onboarding_models_title">Model files</string>
     <string name="onboarding_models_hint">Choose both GGUF files. Heimdall reads them where they are — nothing is copied, moved or uploaded.</string>
-    <string name="onboarding_models_help">Model setup</string>
+    <string name="onboarding_models_help">How to get the files</string>
+    <string name="onboarding_test_pair">Test pair</string>
+    <string name="onboarding_probe_none">The pair has not been tested on this device yet.</string>
+    <string name="onboarding_probe_running">Testing the pair on this device…</string>
     <string name="onboarding_get_recommended">Get recommended model</string>
     <string name="onboarding_copy_names">Copy file names</string>
     <string name="onboarding_model_names_copied">Recommended file names copied.</string>
-    <string name="onboarding_models_recommended_note">Only MiniCPM-V 2.6 is supported. A GGUF with another architecture is rejected when picked.</string>
-    <string name="onboarding_models_help_body">Heimdall runs MiniCPM-V 2.6 locally and needs both of its files:\n\n1. ggml-model-Q4_K_M.gguf (about 5.5 GB, the language weights)\n2. mmproj-model-f16.gguf (about 1 GB, the vision projector)\n\nDownload them from openbmb/MiniCPM-V-2_6 on Hugging Face to the phone (for example Downloads), then tap “Choose file” here and pick each one. Heimdall has no network permission, so the download happens in your browser, not in the app.\n\nThe files stay exactly where they are: the picker grants read access only, so Heimdall never copies or deletes them.\n\nOnly the MiniCPM-V 2.6 pair is supported. Other GGUF files (for example ternary or Bonsai builds) are rejected when picked instead of failing halfway through loading.\n\nCloud-only documents cannot be used because they must be memory-mapped from local storage.</string>
+    <string name="onboarding_models_recommended_note">Supported: MiniCPM-V 2.6, and other vision pairs the bundled llama.cpp can run (for example Qwen3.5-VL / Bonsai). The language weights and the projector must belong together; a mismatch is rejected when picked.</string>
+    <string name="onboarding_models_help_body">Heimdall runs a vision model locally and needs two GGUF files:\n\n1. The language weights (for MiniCPM-V 2.6: ggml-model-Q4_K_M.gguf, about 5.5 GB)\n2. Its matching vision projector (for MiniCPM-V 2.6: mmproj-model-f16.gguf, about 1 GB)\n\nDownload them from openbmb/MiniCPM-V-2_6 on Hugging Face to the phone (for example Downloads), then tap “Choose file” here and pick each one. Other pairs the bundled llama.cpp supports also work when their architectures match (for example a Qwen3.5-VL language file with a qwen3vl_merger projector). Heimdall has no network permission, so the download happens in your browser, not in the app.\n\nThe files stay exactly where they are: the picker grants read access only, so Heimdall never copies or deletes them.\n\nA GGUF whose architecture or projector type is unsupported, or a weights/projector pair from different model families, is rejected when picked instead of failing halfway through loading. Tap “Test pair” to have llama.cpp load the selection once and report whether it really works on this device.\n\nCloud-only documents cannot be used because they must be memory-mapped from local storage.</string>
     <string name="onboarding_choose">Choose file</string>
     <string name="onboarding_replace">Replace</string>
     <string name="onboarding_pick_language">Choose the language weights</string>
@@ -41,12 +47,15 @@
     <string name="onboarding_model_ready_name">%1$s · ready</string>
     <string name="onboarding_model_not_ready">%1$s · %2$s</string>
     <string name="onboarding_model_pick_failed">That file cannot be used: %1$s. Pick a local copy of the GGUF file.</string>
+    <string name="onboarding_model_pick_incompatible">That GGUF cannot be used: %1$s.</string>
+    <string name="onboarding_model_pick_mismatch">That projector does not match the language weights: %1$s.</string>
     <string name="onboarding_issue_missing">unreadable or not a local file</string>
     <string name="onboarding_issue_empty">empty</string>
     <string name="onboarding_issue_not_gguf">not a GGUF model</string>
     <string name="onboarding_issue_truncated">incomplete download</string>
     <string name="onboarding_issue_storage">not enough free space</string>
     <string name="onboarding_issue_incompatible">not a supported model architecture</string>
+    <string name="onboarding_issue_pair">does not match the language weights</string>
     <string name="onboarding_accessibility_help">Android 13+ blocks this toggle for sideloaded apps. Open the main App info page (not the Permissions page), tap ⋮ and choose “Allow restricted settings”, then enable the gesture observer. If that menu item is missing on your build, copy the ADB commands below and run them from a PC or Termux. Heimdall still works without this service: it then notices a pause from screen changes instead.</string>
     <string name="onboarding_open_app_info">Open App info</string>
     <string name="onboarding_copy_adb">Copy ADB command</string>

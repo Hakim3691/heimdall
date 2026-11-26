@@ -14,6 +14,8 @@ import java.nio.ByteOrder
 data class GgufInfo(
     val version: Int,
     val architecture: String?,
+    /** `clip.projector_type` (or `clip.vision.projector_type`), e.g. `resampler` or `qwen3vl_merger`. */
+    val projectorType: String?,
     val keyCount: Long,
     /** True when clip/mmproj keys are present (a vision projector, not language weights). */
     val hasVisionKeys: Boolean,
@@ -51,6 +53,8 @@ object GgufMetadata {
     private const val TYPE_FLOAT64 = 12
 
     private const val KEY_ARCHITECTURE = "general.architecture"
+    private const val KEY_PROJECTOR_TYPE = "clip.projector_type"
+    private const val KEY_VISION_PROJECTOR_TYPE = "clip.vision.projector_type"
 
     /** Parses what fits in [bytes]; null when the buffer is too short or not GGUF v3. */
     fun parse(bytes: ByteArray): GgufInfo? {
@@ -66,6 +70,7 @@ object GgufMetadata {
         val keyCount = buffer.long
 
         var architecture: String? = null
+        var projectorType: String? = null
         var hasVisionKeys = false
         var parsedKeys = 0L
         val target = minOf(keyCount, MAX_KEYS)
@@ -74,6 +79,15 @@ object GgufMetadata {
             val type = buffer.int
             if (key == KEY_ARCHITECTURE && type == TYPE_STRING) {
                 architecture = readString(buffer) ?: break
+            } else if (
+                (key == KEY_PROJECTOR_TYPE || key == KEY_VISION_PROJECTOR_TYPE) &&
+                type == TYPE_STRING
+            ) {
+                // The vision-specific key wins when a mixed-modality projector declares both.
+                val value = readString(buffer) ?: break
+                if (key == KEY_VISION_PROJECTOR_TYPE || projectorType == null) {
+                    projectorType = value
+                }
             } else if (!skipValue(buffer, type, depth = 0)) {
                 break
             }
@@ -85,6 +99,7 @@ object GgufMetadata {
         return GgufInfo(
             version = version,
             architecture = architecture,
+            projectorType = projectorType,
             keyCount = keyCount,
             hasVisionKeys = hasVisionKeys,
         )

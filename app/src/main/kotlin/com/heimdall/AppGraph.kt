@@ -15,6 +15,7 @@ import com.heimdall.engine.vlm.VlmEngine
 import com.heimdall.engine.vlm.VlmRuntime
 import com.heimdall.model.Anchor
 import com.heimdall.model.HeimdallConfig
+import com.heimdall.model.ModelFile
 import com.heimdall.model.ModelValidation
 import com.heimdall.model.OverlayConfig
 import com.heimdall.model.TextMetrics
@@ -77,7 +78,8 @@ class AppGraph(context: Context) {
      */
     fun createEngine(): VlmEngine {
         val validation = models.validateAll()
-        val ready = validation.values.all { it is ModelValidation.Ready }
+        val pairIssue = models.pairIssue(validation)
+        val ready = validation.values.all { it is ModelValidation.Ready } && pairIssue == null
         if (ready) {
             // Zero copy: the selected documents stay where they are and the mounted descriptors
             // keep their /proc/self/fd paths valid for the whole session.
@@ -93,6 +95,8 @@ class AppGraph(context: Context) {
                 )
             }
             log.warn(TAG, "selected model documents could not be mounted for inference")
+        } else if (pairIssue != null) {
+            log.warn(TAG, "model pair rejected: ${pairIssue.detail}")
         }
         if (BuildConfig.DEBUG) {
             log.warn(TAG, "model files unavailable; using scripted engine (debug build only)")
@@ -101,7 +105,8 @@ class AppGraph(context: Context) {
             }
         }
         // Release: still construct the native engine so it can report why it is unavailable.
-        val reason = validation.entries.joinToString { (file, verdict) -> "${file.fileName}=$verdict" }
+        val reason = validation.entries.joinToString { (file, verdict) -> "${file.role}=$verdict" } +
+            (pairIssue?.let { ", pair=${it.detail}" } ?: "")
         log.warn(TAG, "model files unavailable; starting native engine without weights: $reason")
         return NativeVlmEngine("", "", config.vlm, log, clock)
     }
@@ -119,11 +124,81 @@ class AppGraph(context: Context) {
             "loadFailure=${VlmRuntime.loadFailure ?: "none"}"
     }.getOrDefault("nativeVlm=unknown")
 
+    /**
+     * Result of the last [probeModels] run, or null when it has not run for this selection.
+     *
+     * Metadata rejects what it can prove is wrong; this holds the runtime's own verdict on the
+     * exact pair, which is the only way to know a Qwen3.5-VL/Bonsai pair really loads.
+     */
+    @Volatile
+    var modelProbe: String? = null
+        private set
+
+    private var probeKey: String? = null
+    private var probing = false
+
+    /**
+     * Loads the selected pair in the native runtime on a background thread and reports the result.
+     *
+     * Skipped while capture owns the runtime (the probe frees it), and cached per document pair so
+     * focus changes do not reload gigabytes.
+     */
+    fun probeModels(onDone: (String) -> Unit = {}) {
+        if (HeimdallCaptureService.isRunning) {
+            onDone("not tested: stop the capture session first")
+            return
+        }
+        val key = ModelFile.entries.joinToString("|") { models.uriFor(it)?.toString().orEmpty() }
+        synchronized(this) {
+            if (probing) return
+            val cached = modelProbe?.takeIf { probeKey == key }
+            if (cached != null) {
+                onDone(cached)
+                return
+            }
+            val issue = models.pairIssue()
+            if (issue != null) {
+                val message = "pair rejected: ${issue.detail}"
+                modelProbe = message
+                probeKey = key
+                onDone(message)
+                return
+            }
+            val mount = models.mount() ?: run {
+                val message = "not tested: the selected documents cannot be mounted"
+                modelProbe = message
+                onDone(message)
+                return
+            }
+            probing = true
+            Thread({
+                val probe = try {
+                    VlmRuntime.probePair(mount.languagePath, mount.visionPath, log)
+                } finally {
+                    runCatching { mount.close() }
+                }
+                val message = if (probe.ready) {
+                    "pair loads on this device (${probe.message})"
+                } else {
+                    "pair rejected by llama.cpp: ${probe.message}"
+                }
+                synchronized(this) {
+                    modelProbe = message
+                    probeKey = key
+                    probing = false
+                }
+                log.info(TAG, "model pair probe: $message")
+                onDone(message)
+            }, "heimdall-model-probe").start()
+        }
+    }
+
     /** Diagnostics bundle for the export flow: environment + recent log lines. */
     fun diagnosticsReport(): String = buildString {
         appendLine("# Heimdall diagnostics")
         appendLine("version: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
         appendLine("models: ${models.describe()}")
+        appendLine("modelProbe: ${modelProbe ?: "not run"}")
         appendLine("native: ${nativeStatus()}")
         appendLine("capture: running=${HeimdallCaptureService.isRunning} ${session.describe()}")
         appendLine("overlay: ${config.overlay}")

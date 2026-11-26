@@ -10,6 +10,7 @@ import com.heimdall.common.HeimdallLog
 import com.heimdall.model.GgufMetadata
 import com.heimdall.model.ModelFile
 import com.heimdall.model.ModelIssue
+import com.heimdall.model.ModelRole
 import com.heimdall.model.ModelValidation
 import com.heimdall.model.ModelValidator
 import com.heimdall.settings.SettingsStore
@@ -36,6 +37,21 @@ class ModelStore(
     private val log: HeimdallLog,
 ) {
     private val resolver: ContentResolver get() = context.contentResolver
+
+    /**
+     * Last inspection per role. Reading a document's 64 KiB metadata prefix and querying its
+     * DISPLAY_NAME are content-provider round trips, and onboarding refreshes on every focus
+     * change; the cache keeps that off the main thread's critical path. It is keyed by document URI
+     * and cleared whenever a pick changes, so the verdict never outlives the selection.
+     */
+    private data class Cached(
+        val uri: String,
+        val validation: ModelValidation,
+        val summary: String?,
+    )
+
+    private val cache = HashMap<ModelRole, Cached>()
+    private val cacheLock = Any()
 
     /** The persisted document URI for [file], or null when the user has not picked one yet. */
     fun uriFor(file: ModelFile): Uri? =
@@ -65,27 +81,13 @@ class ModelStore(
      * appeared above ternary/Bonsai files.
      */
     fun summary(file: ModelFile): String? {
-        val name = displayName(file) ?: return null
-        val uri = uriFor(file) ?: return name
-        return runCatching {
-            val size = resolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
-            val architecture = resolver.openInputStream(uri)?.use { stream ->
-                val prefix = ByteArray(ModelValidator.METADATA_PREFIX_BYTES)
-                val read = stream.read(prefix)
-                if (read <= 0) null else GgufMetadata.parse(prefix.copyOf(read))?.architecture
-            }
-            buildString {
-                append(name)
-                if (size > 0L) {
-                    append(" · ")
-                    append(formatBytes(size))
-                }
-                if (!architecture.isNullOrBlank()) {
-                    append(" · ")
-                    append(architecture)
-                }
-            }
-        }.getOrDefault(name)
+        validate(file)
+        return synchronized(cacheLock) { cache[file.role]?.summary }
+    }
+
+    /** Forces the next [validate]/[summary] call to re-read both documents. */
+    fun invalidate() {
+        synchronized(cacheLock) { cache.clear() }
     }
 
     private fun formatBytes(bytes: Long): String {
@@ -108,44 +110,93 @@ class ModelStore(
             log.warn(TAG, "provider refused a persistable read grant for ${file.fileName}", error)
         }
         settings.setModelUri(file.role, uri.toString())
-        log.info(TAG, "selected ${file.fileName} from $uri")
+        synchronized(cacheLock) { cache.remove(file.role) }
+        // Log the role and the provider's real name: the canonical slot name made diagnostics read
+        // as if the recommended MiniCPM-V file had been chosen when a Bonsai file was.
+        log.info(TAG, "selected ${file.role} '${displayName(file) ?: "unknown"}' from $uri")
     }
 
     fun forget(file: ModelFile) {
         settings.setModelUri(file.role, null)
+        synchronized(cacheLock) { cache.remove(file.role) }
     }
 
     fun validateAll(): Map<ModelFile, ModelValidation> = ModelFile.entries.associateWith { validate(it) }
 
-    fun allReady(): Boolean = validateAll().values.all { it is ModelValidation.Ready }
+    /** Non-null when both files are individually valid but belong to different model families. */
+    fun pairIssue(
+        validations: Map<ModelFile, ModelValidation> = validateAll(),
+    ): ModelValidation.Invalid? = ModelValidator.validatePair(
+        validations[ModelFile.LANGUAGE] ?: ModelValidation.Invalid(ModelFile.LANGUAGE, ModelIssue.MISSING),
+        validations[ModelFile.VISION] ?: ModelValidation.Invalid(ModelFile.VISION, ModelIssue.MISSING),
+    )
 
-    fun absent(): List<ModelFile> = validateAll().filterValues { it !is ModelValidation.Ready }.keys.toList()
+    fun allReady(): Boolean {
+        val validations = validateAll()
+        return validations.values.all { it is ModelValidation.Ready } && pairIssue(validations) == null
+    }
+
+    /** Slots the user still has to fix; a mismatched pair marks the projector slot. */
+    fun absent(): List<ModelFile> {
+        val validations = validateAll()
+        val broken = validations.filterValues { it !is ModelValidation.Ready }.keys.toMutableList()
+        pairIssue(validations)?.file?.let { file -> if (file !in broken) broken += file }
+        return broken
+    }
 
     /** Validates one selected document without ever throwing into the service. */
     fun validate(file: ModelFile): ModelValidation {
         val uri = uriFor(file) ?: return ModelValidation.Invalid(file, ModelIssue.MISSING, "no file selected")
-        return runCatching {
+        synchronized(cacheLock) {
+            cache[file.role]?.takeIf { it.uri == uri.toString() }?.let { return it.validation }
+        }
+        val (validation, summary) = runCatching {
             val size = resolver.openFileDescriptor(uri, "r")?.use { descriptor -> descriptor.statSize } ?: -1L
             if (size <= 0L) {
                 return@runCatching ModelValidation.Invalid(
                     file,
                     ModelIssue.MISSING,
                     "the document has no readable size",
-                )
+                ) to null
             }
             // Read a metadata prefix, not just the magic: the architecture check needs it, and a
             // 64 KiB read is negligible next to the multi-gigabyte weights.
             val prefix = ByteArray(ModelValidator.METADATA_PREFIX_BYTES)
             val read = resolver.openInputStream(uri)?.use { stream -> stream.read(prefix) } ?: 0
-            ModelValidator.validate(
+            val header = if (read > 0) prefix.copyOf(read) else ByteArray(0)
+            val verdict = ModelValidator.validate(
                 file = file,
                 sizeBytes = size,
-                header = if (read > 0) prefix.copyOf(read) else ByteArray(0),
+                header = header,
                 freeBytes = freeBytes(),
             )
+            verdict to summarize(file, size, header)
         }.getOrElse { error ->
-            log.warn(TAG, "could not inspect ${file.fileName}", error)
-            ModelValidation.Invalid(file, ModelIssue.MISSING, error.message ?: "the document is unreadable")
+            log.warn(TAG, "could not inspect ${file.role}", error)
+            ModelValidation.Invalid(
+                file,
+                ModelIssue.MISSING,
+                error.message ?: "the document is unreadable",
+            ) to null
+        }
+        synchronized(cacheLock) { cache[file.role] = Cached(uri.toString(), validation, summary) }
+        return validation
+    }
+
+    /** One line for the model card: picked name, size and (when readable) architecture. */
+    private fun summarize(file: ModelFile, size: Long, header: ByteArray): String? {
+        val name = displayName(file) ?: return null
+        val architecture = if (header.isNotEmpty()) GgufMetadata.parse(header)?.architecture else null
+        return buildString {
+            append(name)
+            if (size > 0L) {
+                append(" · ")
+                append(formatBytes(size))
+            }
+            if (!architecture.isNullOrBlank()) {
+                append(" · ")
+                append(architecture)
+            }
         }
     }
 
@@ -166,10 +217,24 @@ class ModelStore(
         return Mount(language, vision)
     }
 
-    /** Diagnostics line: selected source per role plus the validation verdict. */
-    fun describe(): String = validateAll().entries.joinToString(separator = ", ") { (file, validation) ->
-        val verdict = if (validation is ModelValidation.Ready) "ready" else validation.toString()
-        "${file.fileName}=$verdict(source=${displayName(file) ?: "none"})"
+    /** Diagnostics line: selected source per role, its verdict, and the pair verdict. */
+    fun describe(): String = buildString {
+        append(
+            validateAll().entries.joinToString(separator = ", ") { (file, validation) ->
+                val verdict = when (validation) {
+                    is ModelValidation.Ready -> buildString {
+                        append("ready")
+                        validation.architecture?.let { append("(architecture=$it)") }
+                        validation.projectorType?.let { append("(projector=$it)") }
+                    }
+
+                    is ModelValidation.Invalid -> validation.toString()
+                }
+                "${file.role}=$verdict(source=${displayName(file) ?: "none"})"
+            },
+        )
+        append(", pair=")
+        append(pairIssue()?.detail ?: "ok")
     }
 
     private fun open(file: ModelFile): MountedFile? {

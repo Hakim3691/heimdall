@@ -40,13 +40,24 @@ enum class ModelIssue {
     TRUNCATED,
     INSUFFICIENT_STORAGE,
 
-    /** A valid GGUF whose architecture is not the supported MiniCPM-V pair. */
+    /** A valid GGUF whose architecture or projector type is not supported. */
     INCOMPATIBLE_MODEL,
+
+    /** Both files are individually usable, but they belong to different model families. */
+    INCOMPATIBLE_PAIR,
 }
 
-/** Result of validating one model file. */
+/** Result of validating one model file, or the pair. */
 sealed interface ModelValidation {
-    data object Ready : ModelValidation
+    /**
+     * A usable file. [architecture] and [projectorType] are null when the metadata prefix could not
+     * be parsed (old GGUF versions or a short read); the pair rule then has no opinion and the
+     * runtime self-test decides.
+     */
+    data class Ready(
+        val architecture: String? = null,
+        val projectorType: String? = null,
+    ) : ModelValidation
 
     data class Invalid(
         val file: ModelFile,
@@ -62,10 +73,15 @@ sealed interface ModelValidation {
  * object for a verdict — which keeps the storage manager's rules testable without a filesystem and
  * impossible to accidentally loosen.
  *
- * The GGUF metadata check is advisory in one direction only: when the prefix cannot be parsed
- * (version 1/2, short read) there is no verdict from metadata, so the size and magic rules decide.
- * When an architecture *is* readable and is not supported, the file is rejected before capture
- * starts instead of failing inside llama.cpp after a multi-gigabyte load.
+ * Compatibility is a **pair** property, not a per-file one. The bundled llama.cpp + mtmd front-end
+ * supports several vision families; which vision projector can be paired with which language
+ * weights is fixed by `tools/mtmd/mtmd-impl.h` (its `PROJECTOR_TYPE_NAMES` table), and a mismatch
+ * fails only after a multi-gigabyte load. Reading `general.architecture` and `clip.projector_type`
+ * at pick time turns that into an immediate, specific verdict.
+ *
+ * The GGUF metadata check is advisory in one direction only: when the prefix cannot be parsed there
+ * is no verdict from metadata, so the size and magic rules decide and the runtime probe remains the
+ * final authority.
  */
 object ModelValidator {
     /** GGUF files start with the ASCII magic "GGUF" followed by a little-endian version. */
@@ -79,14 +95,25 @@ object ModelValidator {
     const val METADATA_PREFIX_BYTES: Int = 64 * 1024
 
     /**
-     * GGUF architectures accepted as Heimdall's language weights.
+     * Language architecture → the projector types mtmd can run with it.
      *
-     * MiniCPM-V 2.6 is Qwen2-based: the official `ggml-model-Q4_K_M.gguf` reports
-     * `general.architecture = qwen2` (the multimodal wiring lives in the separate mmproj), while some
-     * conversions use llama.cpp's `minicpmv` name. Both are accepted; anything else (e.g. a ternary /
-     * Bonsai build) is rejected before the load.
+     * Values are the `clip.projector_type` strings from llama.cpp's `PROJECTOR_TYPE_NAMES`:
+     * * `resampler` — MiniCPM-V 2.x (the official MiniCPM-V 2.6 mmproj declares exactly this)
+     * * `qwen3vl_merger` — Qwen3-VL, including Qwen3.5-VL-based builds such as Ternary-Bonsai
+     * * `minicpmv4_6`/`minicpmv4_7` — MiniCPM-V 4.x, whose language weights are Qwen3.5-based
+     *
+     * Anything outside this table is refused: a `clip` projector is not automatically a match.
      */
-    private val SUPPORTED_LANGUAGE_ARCHITECTURES = setOf("qwen2", "minicpmv")
+    val SUPPORTED_PAIRS: Map<String, Set<String>> = mapOf(
+        "qwen2" to setOf("resampler"),
+        "minicpmv" to setOf("resampler"),
+        "qwen35" to setOf("qwen3vl_merger", "minicpmv4_6", "minicpmv4_7"),
+        "qwen35moe" to setOf("qwen3vl_merger", "minicpmv4_6", "minicpmv4_7"),
+        "qwen3vl" to setOf("qwen3vl_merger"),
+        "qwen3vlmoe" to setOf("qwen3vl_merger"),
+    )
+
+    private val SUPPORTED_PROJECTOR_TYPES: Set<String> = SUPPORTED_PAIRS.values.flatten().toSet()
 
     /** ggml's name for the multimodal projector graph. */
     private const val VISION_ARCHITECTURE = "clip"
@@ -117,37 +144,103 @@ object ModelValidator {
                 "less than ${RUNTIME_HEADROOM_BYTES} bytes free",
             )
         }
-        return incompatible(file, GgufMetadata.parse(header))
-            ?: ModelValidation.Ready
+        val info = GgufMetadata.parse(header)
+        return incompatible(file, info) ?: ModelValidation.Ready(
+            architecture = info?.architecture,
+            projectorType = info?.projectorType,
+        )
     }
+
+    /**
+     * Checks that two individually valid files belong to the same model family.
+     *
+     * Returns null when the pair is acceptable — including when either file's metadata could not be
+     * parsed, because this rule only rejects what it can prove is wrong.
+     */
+    fun validatePair(
+        language: ModelValidation,
+        vision: ModelValidation,
+    ): ModelValidation.Invalid? {
+        val languageReady = language as? ModelValidation.Ready ?: return null
+        val visionReady = vision as? ModelValidation.Ready ?: return null
+        val architecture = languageReady.architecture ?: return null
+        val projectorType = visionReady.projectorType ?: return null
+        val allowed = SUPPORTED_PAIRS[architecture]
+            ?: return ModelValidation.Invalid(
+                ModelFile.VISION,
+                ModelIssue.INCOMPATIBLE_PAIR,
+                "no known vision projector for language architecture '$architecture'",
+            )
+        if (projectorType in allowed) return null
+        return ModelValidation.Invalid(
+            ModelFile.VISION,
+            ModelIssue.INCOMPATIBLE_PAIR,
+            "projector '$projectorType' does not match language architecture '$architecture' " +
+                "(expected ${allowed.joinToString()})",
+        )
+    }
+
+    /** [validatePair] as a verdict, for callers that only need pass/fail. */
+    fun validatePairOrReady(
+        language: ModelValidation,
+        vision: ModelValidation,
+    ): ModelValidation = validatePair(language, vision) ?: ModelValidation.Ready(
+        architecture = (language as? ModelValidation.Ready)?.architecture,
+        projectorType = (vision as? ModelValidation.Ready)?.projectorType,
+    )
 
     private fun incompatible(file: ModelFile, info: GgufInfo?): ModelValidation.Invalid? {
         val architecture = info?.architecture ?: return null
         return when (file.role) {
             ModelRole.LANGUAGE -> {
-                if (architecture in SUPPORTED_LANGUAGE_ARCHITECTURES) {
+                if (architecture in SUPPORTED_PAIRS) {
                     null
                 } else {
                     ModelValidation.Invalid(
                         file,
                         ModelIssue.INCOMPATIBLE_MODEL,
-                        "architecture '$architecture' is not MiniCPM-V",
+                        "architecture '$architecture' is not a supported language model " +
+                            "(supported: ${SUPPORTED_PAIRS.keys.joinToString()})",
                     )
                 }
             }
 
-            ModelRole.VISION_PROJECTOR -> {
-                if (architecture == VISION_ARCHITECTURE || info.hasVisionKeys) {
-                    null
-                } else {
-                    ModelValidation.Invalid(
-                        file,
-                        ModelIssue.INCOMPATIBLE_MODEL,
-                        "architecture '$architecture' is not a vision projector",
-                    )
-                }
-            }
+            ModelRole.VISION_PROJECTOR -> projectorProblem(file, architecture, info)
         }
+    }
+
+    /**
+     * A vision projector must be a `clip` GGUF **and** declare a projector type mtmd implements.
+     * The old rule (`clip || any *vision* key`) accepted foreign projectors such as a Qwen3.5-VL
+     * mmproj next to MiniCPM-V weights, which only fails inside the native load.
+     */
+    private fun projectorProblem(
+        file: ModelFile,
+        architecture: String,
+        info: GgufInfo,
+    ): ModelValidation.Invalid? {
+        if (architecture != VISION_ARCHITECTURE) {
+            return ModelValidation.Invalid(
+                file,
+                ModelIssue.INCOMPATIBLE_MODEL,
+                "architecture '$architecture' is not a vision projector",
+            )
+        }
+        val projectorType = info.projectorType
+            ?: return ModelValidation.Invalid(
+                file,
+                ModelIssue.INCOMPATIBLE_MODEL,
+                "vision projector declares no clip.projector_type",
+            )
+        if (projectorType !in SUPPORTED_PROJECTOR_TYPES) {
+            return ModelValidation.Invalid(
+                file,
+                ModelIssue.INCOMPATIBLE_MODEL,
+                "projector type '$projectorType' is not supported " +
+                    "(supported: ${SUPPORTED_PROJECTOR_TYPES.joinToString()})",
+            )
+        }
+        return null
     }
 
     private fun ByteArray.startsWithGgufMagic(): Boolean {

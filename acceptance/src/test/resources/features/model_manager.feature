@@ -50,3 +50,26 @@ Feature: Local model storage
     Given a vision projector of 1 GB with GGUF architecture "qwen2"
     And 20 GB of free storage
     Then the model validation reports INCOMPATIBLE_MODEL
+
+  Scenario: A Qwen3.5-VL language model is accepted
+    Given a language model of 5 GB with GGUF architecture "qwen35"
+    And 20 GB of free storage
+    Then the model validation result is ready
+
+  Scenario: The official MiniCPM-V 2.6 projector is accepted
+    Given a vision projector of 1 GB with GGUF architecture "clip" and projector type "resampler"
+    And 20 GB of free storage
+    Then the model validation result is ready
+
+  Scenario: A projector with an unknown type is rejected
+    Given a vision projector of 1 GB with GGUF architecture "clip" and projector type "bonsai_clip"
+    And 20 GB of free storage
+    Then the model validation reports INCOMPATIBLE_MODEL
+
+  Scenario: MiniCPM-V weights with a Qwen3-VL projector are rejected as a pair
+    Given language weights "qwen2" with projector type "qwen3vl_merger"
+    Then the model validation reports INCOMPATIBLE_PAIR
+
+  Scenario: Qwen3.5-VL weights with a Qwen3-VL projector are accepted as a pair
+    Given language weights "qwen35" with projector type "qwen3vl_merger"
+    Then the model validation result is ready

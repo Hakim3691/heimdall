@@ -74,11 +74,19 @@ one with **Choose file**. The picker grants read-only access, the file is mapped
 copied, moved, uploaded or written to disk, and the files can stay in Downloads or be deleted at
 any time. Cloud-only documents are rejected because they cannot be memory-mapped.
 
-Only the MiniCPM-V 2.6 pair is supported. The GGUF metadata prefix is read at pick time and a file
-whose `general.architecture` is not `qwen2`/`minicpmv` (MiniCPM-V 2.6 is Qwen2-based, and the
-official conversion reports `qwen2`) or `clip`/vision keys for the projector is rejected immediately
-— a valid-looking but incompatible file such as a ternary/Bonsai build no longer reports `ready` and
-then fails inside llama.cpp after a multi-gigabyte load.
+Compatibility is a property of the **pair**, and the bundled llama.cpp + mtmd front-end supports
+more than one vision family. The GGUF metadata prefix is read at pick time:
+
+* `qwen2`/`minicpmv` weights need a `resampler` projector — the official MiniCPM-V 2.6 pair
+  (`general.architecture = qwen2`, `clip.projector_type = resampler`).
+* `qwen35`/`qwen35moe`/`qwen3vl` weights need a `qwen3vl_merger` projector (or `minicpmv4_6`/
+  `minicpmv4_7` for MiniCPM-V 4.x). This covers Qwen3.5-VL builds such as Ternary-Bonsai.
+
+A file whose architecture or `clip.projector_type` is outside that table is rejected immediately,
+and so is a weights/projector pair from different families — a valid-looking but incompatible file
+no longer reports `ready` and then fails inside llama.cpp after a multi-gigabyte load. Because
+metadata can only predict, the model card's **Test pair** button loads the selection once in the
+real runtime and reports whether it works on this device; the verdict is included in diagnostics.
 
 Earlier builds told you to copy the files to `/sdcard/Heimdall/models/`. Scoped storage made that
 unreadable on Android 12+, which is why the model row stayed red; that path is no longer used or

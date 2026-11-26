@@ -49,6 +49,9 @@ struct RuntimeState {
 
 RuntimeState g_state;
 std::mutex g_mutex;
+// Last load/init failure, surfaced to Kotlin so onboarding can explain a refused pair instead of
+// only logging it. Cleared at the start of every init.
+std::string g_last_error;
 
 std::string tokenToText(const llama_vocab * vocab, llama_token token) {
     char buffer[256];
@@ -134,6 +137,7 @@ Java_com_heimdall_engine_vlm_NativeVlmBridge_nativeInit(
         jstring modelPath, jstring mmprojPath,
         jint contextSize, jint threads, jint gpuLayers) {
     std::lock_guard<std::mutex> guard(g_mutex);
+    g_last_error.clear();
     if (g_state.model != nullptr && g_state.vision != nullptr) {
         return JNI_TRUE;
     }
@@ -164,6 +168,7 @@ Java_com_heimdall_engine_vlm_NativeVlmBridge_nativeInit(
     g_state.model = llama_model_load_from_file(modelPathStr.c_str(), modelParams);
     if (g_state.model == nullptr) {
         LOGE("init: failed to load language model %s", modelPathStr.c_str());
+        g_last_error = "llama.cpp refused the language weights";
         releaseLocked();
         return JNI_FALSE;
     }
@@ -181,11 +186,13 @@ Java_com_heimdall_engine_vlm_NativeVlmBridge_nativeInit(
     g_state.vision = mtmd_init_from_file(mmprojPathStr.c_str(), g_state.model, visionParams);
     if (g_state.vision == nullptr) {
         LOGE("init: failed to load vision projector %s", mmprojPathStr.c_str());
+        g_last_error = "llama.cpp refused the vision projector (wrong projector type for these weights?)";
         releaseLocked();
         return JNI_FALSE;
     }
     if (!mtmd_support_vision(g_state.vision)) {
         LOGE("init: projector does not report vision support");
+        g_last_error = "the projector does not report vision support";
         releaseLocked();
         return JNI_FALSE;
     }
@@ -341,6 +348,13 @@ Java_com_heimdall_engine_vlm_NativeVlmBridge_nativeBackend(
         return env->NewStringUTF("unloaded");
     }
     return env->NewStringUTF(kBackend);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_heimdall_engine_vlm_NativeVlmBridge_nativeLastError(
+        JNIEnv * env, jobject /* thiz */) {
+    std::lock_guard<std::mutex> guard(g_mutex);
+    return env->NewStringUTF(g_last_error.c_str());
 }
 
 extern "C" JNIEXPORT void JNICALL

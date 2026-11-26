@@ -60,6 +60,12 @@ internal object NativeVlmBridge {
     /** e.g. "vulkan", "cpu", or "unloaded". */
     external fun nativeBackend(): String
 
+    /** Why the last [nativeInit] was refused; empty when it succeeded. */
+    external fun nativeLastError(): String
+
+    /** Kotlin-side view of [nativeLastError], null when there is no message. */
+    fun lastError(): String? = runCatching { nativeLastError() }.getOrNull()?.takeIf { it.isNotBlank() }
+
     /** Frees model/context memory. Safe to call repeatedly. */
     external fun nativeRelease()
 }
