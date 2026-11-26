@@ -88,6 +88,25 @@ no longer reports `ready` and then fails inside llama.cpp after a multi-gigabyte
 metadata can only predict, the model card's **Test pair** button loads the selection once in the
 real runtime and reports whether it works on this device; the verdict is included in diagnostics.
 
+### File packing, not just architecture
+
+The bundled llama.cpp is pinned to upstream `77026f6e` and reads the quantisations merged there —
+including Bonsai's `Q2_0` — and nothing that exists only in PrismML's fork:
+
+| Packing | ggml tensor type | Bundled build |
+|---|---|---|
+| `Q2_0` (Bonsai + Hadamard) | 42 | supported |
+| `Q8_0`, `Q4_K_M`, `F16`, … | standard | supported |
+| `PQ2_0` | 142 | needs PrismML's binaries |
+| `PTQ1_0` | 143 | needs PrismML's binaries |
+| `-MTP-` drafter head | — | needs PrismML's binaries |
+| `DFlash2` | — | needs PrismML's binaries |
+
+So for Ternary-Bonsai 2 4B the pair to pick is `Ternary-Bonsai-2-4B-Q2_0.gguf` (1.21 GB) with
+`Ternary-Bonsai-2-4B-mmproj-Q8_0.gguf`; a `PQ2_0-MTP` language file is the one llama.cpp refuses.
+The refusal now names the offending tensor type and quotes the runtime's own log line instead of
+only saying "refused the language weights", and that log tail is part of the exported diagnostics.
+
 Earlier builds told you to copy the files to `/sdcard/Heimdall/models/`. Scoped storage made that
 unreadable on Android 12+, which is why the model row stayed red; that path is no longer used or
 required.

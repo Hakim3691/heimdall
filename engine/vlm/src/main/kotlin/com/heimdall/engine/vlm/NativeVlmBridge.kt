@@ -66,6 +66,17 @@ internal object NativeVlmBridge {
     /** Kotlin-side view of [nativeLastError], null when there is no message. */
     fun lastError(): String? = runCatching { nativeLastError() }.getOrNull()?.takeIf { it.isNotBlank() }
 
+    /**
+     * Tail of what llama.cpp/ggml logged during the last load, one message per line.
+     *
+     * This is where the real refusal lives ("tensor '...' has invalid ggml type 142"); the
+     * boolean returned by [nativeInit] says only that the load failed.
+     */
+    external fun nativeLogTail(): String
+
+    /** [nativeLogTail] that degrades to an empty string when the runtime is unavailable. */
+    fun logTail(): String = runCatching { nativeLogTail() }.getOrDefault("")
+
     /** Frees model/context memory. Safe to call repeatedly. */
     external fun nativeRelease()
 }

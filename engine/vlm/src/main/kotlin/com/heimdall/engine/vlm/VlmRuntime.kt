@@ -10,8 +10,13 @@ import com.heimdall.common.HeimdallLog
  * that answers the only question metadata cannot: does this exact pair load on this device?
  */
 object VlmRuntime {
-    /** Outcome of [probePair]. */
-    data class PairProbe(val ready: Boolean, val message: String)
+    /**
+     * Outcome of [probePair].
+     *
+     * [nativeLog] is the captured llama.cpp/ggml log tail for this attempt, so a refusal can be
+     * explained here and reproduced from an exported diagnostics report without adb.
+     */
+    data class PairProbe(val ready: Boolean, val message: String, val nativeLog: String = "")
 
     /** True when `libheimdall.so` loaded for this process. Forces the (cached) load attempt. */
     val isLoaded: Boolean get() = NativeVlmBridge.ensureLoaded()
@@ -52,7 +57,12 @@ object VlmRuntime {
                 gpuLayers = 0,
             )
             if (!loaded) {
-                PairProbe(false, NativeVlmBridge.lastError() ?: "llama.cpp refused the pair")
+                val logTail = NativeVlmBridge.logTail()
+                val refusal = NativeLoadFailure.explain(
+                    message = NativeVlmBridge.lastError() ?: "llama.cpp refused the pair",
+                    nativeLog = logTail,
+                )
+                PairProbe(false, refusal, logTail)
             } else {
                 // One real decode proves the multimodal marker, projector and vocabulary agree.
                 val argb = IntArray(PROBE_EDGE * PROBE_EDGE) { 0xFF808080.toInt() }
@@ -64,7 +74,7 @@ object VlmRuntime {
                     maxTokens = 1,
                     temperature = 0f,
                 )
-                PairProbe(true, NativeVlmBridge.nativeBackend())
+                PairProbe(true, NativeVlmBridge.nativeBackend(), NativeVlmBridge.logTail())
             }
         } catch (failure: Throwable) {
             PairProbe(false, failure.message ?: failure.javaClass.simpleName)

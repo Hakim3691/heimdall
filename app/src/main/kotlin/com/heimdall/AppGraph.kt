@@ -134,6 +134,10 @@ class AppGraph(context: Context) {
     var modelProbe: String? = null
         private set
 
+    /** llama.cpp/ggml log tail of the last probe, exported with the diagnostics report. */
+    @Volatile
+    private var probeNativeLog: String = ""
+
     private var probeKey: String? = null
     private var probing = false
 
@@ -184,10 +188,18 @@ class AppGraph(context: Context) {
                 }
                 synchronized(this) {
                     modelProbe = message
+                    probeNativeLog = probe.nativeLog
                     probeKey = key
                     probing = false
                 }
-                log.info(TAG, "model pair probe: $message")
+                if (probe.ready) {
+                    log.info(TAG, "model pair probe: $message")
+                } else {
+                    log.warn(TAG, "model pair probe: $message")
+                    probe.nativeLog.lineSequence()
+                        .filter { it.isNotBlank() }
+                        .forEach { log.info(TAG, "llama.cpp: $it") }
+                }
                 onDone(message)
             }, "heimdall-model-probe").start()
         }
@@ -200,6 +212,14 @@ class AppGraph(context: Context) {
         appendLine("models: ${models.describe()}")
         appendLine("modelProbe: ${modelProbe ?: "not run"}")
         appendLine("native: ${nativeStatus()}")
+        if (probeNativeLog.isNotBlank()) {
+            appendLine()
+            appendLine("## llama.cpp log (last probe)")
+            probeNativeLog.lineSequence()
+                .filter { it.isNotBlank() }
+                .forEach { appendLine(it) }
+            appendLine()
+        }
         appendLine("capture: running=${HeimdallCaptureService.isRunning} ${session.describe()}")
         appendLine("overlay: ${config.overlay}")
         appendLine("trigger: ${config.trigger}")

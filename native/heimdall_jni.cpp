@@ -17,6 +17,8 @@
 #include <jni.h>
 
 #include <android/log.h>
+#include <cstdio>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -52,6 +54,89 @@ std::mutex g_mutex;
 // Last load/init failure, surfaced to Kotlin so onboarding can explain a refused pair instead of
 // only logging it. Cleared at the start of every init.
 std::string g_last_error;
+
+// ---------------------------------------------------------------------------------------------
+// llama.cpp log capture.
+//
+// ggml reports the *reason* a GGUF is refused through the log (`tensor 'blk.0...' has invalid ggml
+// type 142`), not through a return code. Without a log callback that sentence only reaches
+// stderr/logcat, so the UI could say no more than "llama.cpp refused the language weights". The
+// ring buffer below keeps the tail of the load so the refusal can be classified and shown.
+// ---------------------------------------------------------------------------------------------
+constexpr size_t kMaxLogLines = 64;
+constexpr size_t kMaxLogLineChars = 400;
+
+std::mutex g_log_mutex;   // never taken while g_mutex is required by the log callback path
+std::deque<std::string> g_log_lines;
+std::once_flag g_log_once;
+
+void logCallback(ggml_log_level level, const char * text, void * /* user_data */) {
+    if (text == nullptr) {
+        return;
+    }
+    // Keep logcat useful for `adb logcat -s HeimdallNative` while loading.
+    if (level == GGML_LOG_LEVEL_ERROR) {
+        LOGE("%s", text);
+    } else if (level == GGML_LOG_LEVEL_WARN) {
+        LOGW("%s", text);
+    }
+    if (level == GGML_LOG_LEVEL_DEBUG || level == GGML_LOG_LEVEL_NONE) {
+        return;
+    }
+
+    std::string chunk(text);
+    while (!chunk.empty() && (chunk.back() == '\n' || chunk.back() == '\r')) {
+        chunk.pop_back();
+    }
+    if (chunk.empty()) {
+        return;
+    }
+    const char * prefix = level == GGML_LOG_LEVEL_ERROR ? "error: "
+            : level == GGML_LOG_LEVEL_WARN                 ? "warn: "
+                                                           : "info: ";
+    if (level != GGML_LOG_LEVEL_CONT) {
+        chunk = std::string(prefix) + chunk;
+    }
+    // NewStringUTF only accepts modified UTF-8; llama.cpp text is ASCII, be defensive anyway.
+    for (char & ch : chunk) {
+        const unsigned char byte = static_cast<unsigned char>(ch);
+        if (byte < 0x20 || byte > 0x7E) {
+            ch = ' ';
+        }
+    }
+    if (chunk.size() > kMaxLogLineChars) {
+        chunk.resize(kMaxLogLineChars);
+    }
+
+    std::lock_guard<std::mutex> guard(g_log_mutex);
+    if (level == GGML_LOG_LEVEL_CONT && !g_log_lines.empty()) {
+        std::string & last = g_log_lines.back();
+        if (last.size() + chunk.size() <= kMaxLogLineChars) {
+            last += " " + chunk;
+        }
+        return;
+    }
+    g_log_lines.push_back(chunk);
+    while (g_log_lines.size() > kMaxLogLines) {
+        g_log_lines.pop_front();
+    }
+}
+
+void installLogCaptureLocked() {
+    std::call_once(g_log_once, []() { llama_log_set(logCallback, nullptr); });
+    std::lock_guard<std::mutex> guard(g_log_mutex);
+    g_log_lines.clear();
+}
+
+std::string logTailLocked() {
+    std::lock_guard<std::mutex> guard(g_log_mutex);
+    std::string text;
+    for (const std::string & line : g_log_lines) {
+        text += line;
+        text += '\n';
+    }
+    return text;
+}
 
 std::string tokenToText(const llama_vocab * vocab, llama_token token) {
     char buffer[256];
@@ -155,6 +240,7 @@ Java_com_heimdall_engine_vlm_NativeVlmBridge_nativeInit(
     env->ReleaseStringUTFChars(modelPath, modelPathChars);
     env->ReleaseStringUTFChars(mmprojPath, mmprojPathChars);
 
+    installLogCaptureLocked();
     llama_backend_init();
     g_state.backendInitialised = true;
 
@@ -355,6 +441,13 @@ Java_com_heimdall_engine_vlm_NativeVlmBridge_nativeLastError(
         JNIEnv * env, jobject /* thiz */) {
     std::lock_guard<std::mutex> guard(g_mutex);
     return env->NewStringUTF(g_last_error.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_heimdall_engine_vlm_NativeVlmBridge_nativeLogTail(
+        JNIEnv * env, jobject /* thiz */) {
+    const std::string text = logTailLocked();
+    return env->NewStringUTF(text.c_str());
 }
 
 extern "C" JNIEXPORT void JNICALL
