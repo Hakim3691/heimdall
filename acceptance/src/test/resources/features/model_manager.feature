@@ -30,3 +30,18 @@ Feature: Local model storage
     Given a vision projector of 1 GB with a GGUF header
     And 20 GB of free storage
     Then the model validation result is ready
+
+  Scenario: The recommended MiniCPM-V architecture is accepted
+    Given a language model of 5 GB with GGUF architecture "minicpmv"
+    And 20 GB of free storage
+    Then the model validation result is ready
+
+  Scenario: A GGUF with an unsupported architecture is rejected before loading
+    Given a language model of 5 GB with GGUF architecture "bonsai"
+    And 20 GB of free storage
+    Then the model validation reports INCOMPATIBLE_MODEL
+
+  Scenario: A weights file offered as the vision projector is rejected
+    Given a vision projector of 1 GB with GGUF architecture "minicpmv"
+    And 20 GB of free storage
+    Then the model validation reports INCOMPATIBLE_MODEL

@@ -3,10 +3,13 @@ package com.heimdall.ui
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -49,14 +52,10 @@ class OnboardingActivity : Activity() {
     private lateinit var stepsContainer: LinearLayout
     private lateinit var modelsContainer: LinearLayout
     private lateinit var primaryButton: Button
-    private lateinit var stopButton: Button
     private lateinit var statusLine: TextView
 
     /** The step this screen already launched for the user, so returning does not relaunch it. */
     private var autoStep: OnboardingStep? = null
-
-    /** The cast prompt is per session; it is offered automatically once, then only on request. */
-    private var projectionPrompted = false
 
     private var notificationDialogInFlight = false
 
@@ -67,7 +66,6 @@ class OnboardingActivity : Activity() {
         autoStep = savedInstanceState?.getString(KEY_AUTO_STEP)?.let { name ->
             runCatching { OnboardingStep.valueOf(name) }.getOrNull()
         }
-        projectionPrompted = savedInstanceState?.getBoolean(KEY_PROJECTION_PROMPTED) ?: false
         setContentView(buildContent())
         requestNotificationsOnce()
     }
@@ -75,7 +73,6 @@ class OnboardingActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(KEY_AUTO_STEP, autoStep?.name)
-        outState.putBoolean(KEY_PROJECTION_PROMPTED, projectionPrompted)
     }
 
     override fun onResume() {
@@ -154,12 +151,6 @@ class OnboardingActivity : Activity() {
         }
         root.addView(primaryButton, LinearLayout.LayoutParams(MATCH, dp(52)).apply { topMargin = dp(16) })
 
-        stopButton = Button(this).apply {
-            text = getString(R.string.onboarding_stop)
-            setOnClickListener { stopCapture() }
-        }
-        root.addView(stopButton, LinearLayout.LayoutParams(MATCH, dp(48)).apply { topMargin = dp(8) })
-
         val footer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -201,8 +192,11 @@ class OnboardingActivity : Activity() {
 
         // Explicit order: display order and the order [OnboardingState.nextStep] asks for must agree.
         for (step in STEP_ORDER) {
-            stepsContainer.addView(buildStepRow(step, getString(labels.getValue(step)), step in granted))
-            if (step == OnboardingStep.ACCESSIBILITY && step !in granted) {
+            val optional = step == OnboardingStep.ACCESSIBILITY
+            stepsContainer.addView(
+                buildStepRow(step, getString(labels.getValue(step)), step in granted, optional = optional),
+            )
+            if (optional && step !in granted) {
                 stepsContainer.addView(buildAccessibilityHelp())
             }
         }
@@ -217,9 +211,6 @@ class OnboardingActivity : Activity() {
             else -> getString(R.string.onboarding_next_step, getString(labels.getValue(next)))
         }
         primaryButton.alpha = 1f
-
-        // Stop is only meaningful while a session exists; hidden otherwise instead of failing.
-        stopButton.visibility = if (HeimdallCaptureService.isRunning) View.VISIBLE else View.GONE
 
         statusLine.text = buildString {
             append(
@@ -237,7 +228,12 @@ class OnboardingActivity : Activity() {
         }
     }
 
-    private fun buildStepRow(step: OnboardingStep, label: String, granted: Boolean): View {
+    private fun buildStepRow(
+        step: OnboardingStep,
+        label: String,
+        granted: Boolean,
+        optional: Boolean = false,
+    ): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -252,12 +248,18 @@ class OnboardingActivity : Activity() {
         row.addView(text, LinearLayout.LayoutParams(0, WRAP, 1f))
         row.addView(
             TextView(this).apply {
-                this.text = if (granted) {
-                    getString(R.string.onboarding_status_granted)
-                } else {
-                    getString(R.string.onboarding_status_missing)
+                this.text = when {
+                    granted -> getString(R.string.onboarding_status_granted)
+                    optional -> getString(R.string.onboarding_status_optional)
+                    else -> getString(R.string.onboarding_status_missing)
                 }
-                setTextColor(if (granted) ACCENT else WARN)
+                setTextColor(
+                    when {
+                        granted -> ACCENT
+                        optional -> TEXT_FAINT
+                        else -> WARN
+                    },
+                )
                 textSize = 12f
                 setPadding(0, 0, dp(12), 0)
             },
@@ -288,13 +290,24 @@ class OnboardingActivity : Activity() {
                 textSize = 13f
             },
         )
-        card.addView(
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(6), 0, 0)
+        }
+        actions.addView(
             Button(this).apply {
                 text = getString(R.string.onboarding_open_app_info)
                 setOnClickListener { openAppInfo() }
             },
-            LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(6) },
+            LinearLayout.LayoutParams(WRAP, WRAP).apply { setMargins(0, 0, dp(8), 0) },
         )
+        actions.addView(
+            Button(this).apply {
+                text = getString(R.string.onboarding_copy_adb)
+                setOnClickListener { copyAdbCommand() }
+            },
+        )
+        card.addView(actions)
         return card
     }
 
@@ -321,6 +334,32 @@ class OnboardingActivity : Activity() {
             },
         )
         modelsContainer.addView(
+            TextView(this).apply {
+                text = getString(R.string.onboarding_models_recommended_note)
+                setTextColor(TEXT_FAINT)
+                textSize = 12f
+                setPadding(0, dp(8), 0, 0)
+            },
+        )
+        val modelActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(6), 0, 0)
+        }
+        modelActions.addView(
+            Button(this).apply {
+                text = getString(R.string.onboarding_get_recommended)
+                setOnClickListener { openRecommendedModel() }
+            },
+            LinearLayout.LayoutParams(WRAP, WRAP).apply { setMargins(0, 0, dp(8), 0) },
+        )
+        modelActions.addView(
+            Button(this).apply {
+                text = getString(R.string.onboarding_copy_names)
+                setOnClickListener { copyRecommendedFileNames() }
+            },
+        )
+        modelsContainer.addView(modelActions)
+        modelsContainer.addView(
             Button(this).apply {
                 text = getString(R.string.onboarding_models_help)
                 setOnClickListener { showModelHelp() }
@@ -344,7 +383,7 @@ class OnboardingActivity : Activity() {
             },
         )
         val ready = validation is ModelValidation.Ready
-        val selected = graph.models.displayName(file) ?: getString(R.string.onboarding_model_missing)
+        val selected = graph.models.summary(file) ?: getString(R.string.onboarding_model_missing)
         column.addView(
             TextView(this).apply {
                 text = if (ready) {
@@ -378,6 +417,7 @@ class OnboardingActivity : Activity() {
             ModelIssue.NOT_A_GGUF -> getString(R.string.onboarding_issue_not_gguf)
             ModelIssue.TRUNCATED -> getString(R.string.onboarding_issue_truncated)
             ModelIssue.INSUFFICIENT_STORAGE -> getString(R.string.onboarding_issue_storage)
+            ModelIssue.INCOMPATIBLE_MODEL -> getString(R.string.onboarding_issue_incompatible)
         }
     }
 
@@ -439,10 +479,10 @@ class OnboardingActivity : Activity() {
 
             OnboardingStep.PROJECTION -> {
                 autoStep = next
-                if (!projectionPrompted) {
-                    projectionPrompted = true
-                    requestProjection()
-                }
+                // The cast dialog is offered automatically on the first run only. Afterwards the
+                // consent is per session by platform rule, but re-prompting on every launch would
+                // be a nag the user cannot dismiss permanently.
+                if (!graph.settings.projectionPrompted) requestProjection()
             }
 
             OnboardingStep.NOTIFICATIONS, OnboardingStep.DONE -> Unit
@@ -512,6 +552,46 @@ class OnboardingActivity : Activity() {
         )
     }
 
+    /**
+     * The exact commands that lift the restricted-settings flag and enable the service.
+     *
+     * Package and component are resolved from the running build, so the same card works for the
+     * release (`com.heimdall`) and debug (`com.heimdall.debug`) packages.
+     */
+    private fun adbCommands(): String = buildString {
+        appendLine("adb shell appops set $packageName ACCESS_RESTRICTED_SETTINGS allow")
+        appendLine(
+            "adb shell settings put secure enabled_accessibility_services " +
+                "$packageName/com.heimdall.service.HeimdallAccessibilityService",
+        )
+        append("adb shell settings put secure accessibility_enabled 1")
+    }
+
+    private fun copyAdbCommand() {
+        copyToClipboard("Heimdall accessibility", adbCommands())
+        Toast.makeText(this, R.string.onboarding_adb_copied, Toast.LENGTH_LONG).show()
+    }
+
+    /** Opens the Hugging Face page in the system browser; Heimdall itself has no network access. */
+    private fun openRecommendedModel() {
+        val opened = runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(RECOMMENDED_MODEL_URL)))
+        }.isSuccess
+        if (!opened) {
+            Toast.makeText(this, RECOMMENDED_MODEL_URL, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun copyRecommendedFileNames() {
+        copyToClipboard("Heimdall model files", RECOMMENDED_FILE_NAMES)
+        Toast.makeText(this, R.string.onboarding_model_names_copied, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun copyToClipboard(label: String, text: String) {
+        val clipboard = getSystemService(ClipboardManager::class.java) ?: return
+        clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+    }
+
     private fun pickModel(file: ModelFile) {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -553,7 +633,16 @@ class OnboardingActivity : Activity() {
             Toast.makeText(this, getString(R.string.onboarding_models_hint), Toast.LENGTH_LONG).show()
             return
         }
-        startActivityForResult(manager.createScreenCaptureIntent(), REQ_PROJECTION)
+        graph.settings.projectionPrompted = true
+        // Android 14+ lets the app pin the dialog to the whole display, which removes the
+        // "single app" option that would otherwise give Heimdall a crop of one window.
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else {
+            @Suppress("DEPRECATION")
+            manager.createScreenCaptureIntent()
+        }
+        startActivityForResult(intent, REQ_PROJECTION)
     }
 
     private fun exportDiagnostics() {
@@ -693,7 +782,8 @@ class OnboardingActivity : Activity() {
         const val REQ_PICK_LANGUAGE = 45
         const val REQ_PICK_VISION = 46
         const val KEY_AUTO_STEP = "com.heimdall.extra.AUTO_STEP"
-        const val KEY_PROJECTION_PROMPTED = "com.heimdall.extra.PROJECTION_PROMPTED"
+        const val RECOMMENDED_MODEL_URL = "https://huggingface.co/openbmb/MiniCPM-V-2_6-gguf"
+        const val RECOMMENDED_FILE_NAMES = "ggml-model-Q4_K_M.gguf\nmmproj-model-f16.gguf"
 
         val STEP_ORDER = listOf(
             OnboardingStep.OVERLAY,

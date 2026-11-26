@@ -64,14 +64,20 @@ release identity.
 Models are never committed or bundled. Heimdall reads the two MiniCPM-V 2.6 GGUF files **in place**,
 straight from wherever you downloaded them:
 
-* `minicpm-v-2_6-Q4_K_M.gguf` (~5.5 GB)
-* `mmproj-f16.gguf` (~1 GB)
+* `ggml-model-Q4_K_M.gguf` (~5.5 GB, language weights)
+* `mmproj-model-f16.gguf` (~1 GB, vision projector)
 
-Download them from `openbmb/MiniCPM-V-2_6` on Hugging Face to the phone, then use **Model files →
-Choose file** in the app and pick each one. The picker grants read-only access, the file is mapped
-through `/proc/self/fd/<n>`, and the raw descriptors stay open only for the capture session — nothing
-is copied, moved, uploaded or written to disk, and the files can stay in Downloads or be deleted at
+Download them from `openbmb/MiniCPM-V-2_6` on Hugging Face in the phone browser (the app has no
+network permission, so **Get recommended model** in the app hands off to the browser) and pick each
+one with **Choose file**. The picker grants read-only access, the file is mapped through
+`/proc/self/fd/<n>`, and the raw descriptors stay open only for the capture session — nothing is
+copied, moved, uploaded or written to disk, and the files can stay in Downloads or be deleted at
 any time. Cloud-only documents are rejected because they cannot be memory-mapped.
+
+Only the MiniCPM-V 2.6 pair is supported. The GGUF metadata prefix is read at pick time and a file
+whose `general.architecture` is not `minicpmv` (language weights) or `clip`/vision keys (projector)
+is rejected immediately — a valid-looking but incompatible file such as a ternary/Bonsai build no
+longer reports `ready` and then fails inside llama.cpp after a multi-gigabyte load.
 
 Earlier builds told you to copy the files to `/sdcard/Heimdall/models/`. Scoped storage made that
 unreadable on Android 12+, which is why the model row stayed red; that path is no longer used or
@@ -84,9 +90,32 @@ screen capture are Settings toggles or per-session system dialogs. The app there
 platform screens automatically on first launch — notification permission, overlay, accessibility,
 model picker, then the cast prompt — and explains each obstacle inline.
 
-Sideloaded builds must first be allowed to use restricted settings: **App info → ⋮ → Allow restricted
-settings**, otherwise Android answers the accessibility toggle with "App was denied access" and the
-service can never turn on.
+### Accessibility is optional
+
+Android 13+ blocks the accessibility toggle for sideloaded apps until restricted settings are
+allowed, and no app can grant that to itself. Heimdall therefore treats the gesture observer as an
+**optional enhancement**: without it, the cascade derives interactions from frame changes, so
+capture and hints still work. Enable it for more accurate pause detection.
+
+If the toggle answers "App was denied access", open the **main App info page** (not the Permissions
+page), tap **⋮ → Allow restricted settings**, confirm, then enable the service. On builds where that
+menu item is missing, the equivalent ADB commands are (release package shown; debug is
+`com.heimdall.debug`):
+
+```bash
+adb shell appops set com.heimdall ACCESS_RESTRICTED_SETTINGS allow
+adb shell settings put secure enabled_accessibility_services \
+  com.heimdall/com.heimdall.service.HeimdallAccessibilityService
+adb shell settings put secure accessibility_enabled 1
+```
+
+The onboarding card has a **Copy ADB command** button with these lines for the installed package.
+Installing via `adb install` or a session installer does **not** exempt the app: `adb` is itself a
+sideload channel, so the app-op above is still required on most builds.
+
+Screen capture consent is per session by platform rule and cannot be persisted. Heimdall asks for it
+once automatically and afterwards only when you tap Start; on Android 14+ the dialog is pinned to
+the whole display so it cannot silently capture a single app.
 
 ## Tests
 

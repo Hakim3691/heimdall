@@ -26,6 +26,7 @@ import com.heimdall.AppGraph
 import com.heimdall.HeimdallApplication
 import com.heimdall.R
 import com.heimdall.engine.vlm.InterventionGate
+import com.heimdall.engine.vlm.NativeVlmEngine
 import com.heimdall.engine.vlm.PromptBuilder
 import com.heimdall.engine.vlm.VlmEngine
 import com.heimdall.engine.vlm.VlmException
@@ -171,10 +172,25 @@ class HeimdallCaptureService : Service() {
             mainHandler,
         )
 
-        engine = graph.createEngine()
+        graph.session.reset()
+        val createdEngine = graph.createEngine()
+        engine = createdEngine
+        graph.session.engineStatus = createdEngine.backendDescription
+        // Accessibility is optional: when its service is not connected, the cascade derives
+        // interactions from frame changes instead of silently never leaving the hesitation gate.
+        graph.cascade.interactionEventsAvailable = HeimdallAccessibilityService.connected
+
         gyro = GyroMonitor(this, graph.cascade, graph.log).also { it.start() }
         registerThermalListener()
         graph.settings.hasStartedCapture = true
+
+        // Warm the runtime off the main thread: the first inference would otherwise pay the whole
+        // model load while the user waits. The engine stays lazy, so a failure only disables inference.
+        serviceScope.launch {
+            (createdEngine as? NativeVlmEngine)?.ensureInitialised()
+            graph.session.engineStatus = createdEngine.backendDescription
+            graph.log.info(TAG, "engine status=${graph.session.engineStatus}")
+        }
 
         captureJob = serviceScope.launch { captureLoop() }
         graph.log.info(TAG, "capture started ${width}x$height backend=${engine?.backendDescription}")
@@ -198,10 +214,12 @@ class HeimdallCaptureService : Service() {
             } ?: continue
 
             val observation = graph.cascade.onFrame(analysis)
+            graph.session.onFrameObserved()
             // The first frame only establishes the baseline; stability needs two consecutive frames.
             if (observation.hammingDistance == null) continue
 
             if (graph.cascade.evaluate() !is GateResult.Passed) continue
+            graph.session.onGatePassed()
             if (!graph.governor.canRunNow()) continue
 
             evaluateFrame(analysis, vlmConfig)
@@ -217,6 +235,7 @@ class HeimdallCaptureService : Service() {
         val square = ScreenFrameConverter.toSquare(analysis, vlmConfig.imageSize)
         val request = VlmRequest(image = square, prompt = PromptBuilder.build(graph.config.overlay))
 
+        graph.session.onInferenceStarted()
         val response = try {
             withTimeoutOrNull(vlmConfig.inferenceTimeoutMs) { currentEngine.evaluate(request) }
         } catch (cancelled: CancellationException) {
@@ -236,7 +255,10 @@ class HeimdallCaptureService : Service() {
             is VlmOutcome.Intervene -> {
                 val spec = OverlayPolicy.specFor(outcome.intervention, graph.config.overlay)
                 val shown = withContext(Dispatchers.Main) { graph.overlay.show(spec) }
-                if (shown) graph.cascade.onInterventionRendered()
+                if (shown) {
+                    graph.cascade.onInterventionRendered()
+                    graph.session.onInterventionRendered()
+                }
                 graph.log.info(
                     TAG,
                     "intervention shown in ${response.latencyMs}ms (${response.backend})",

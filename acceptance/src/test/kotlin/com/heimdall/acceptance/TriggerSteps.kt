@@ -16,6 +16,11 @@ class TriggerSteps(private val world: World) {
         assertThat(world.cascade.hesitation.isArmed).isFalse()
     }
 
+    @Given("the accessibility interaction stream is unavailable")
+    fun accessibilityUnavailable() {
+        world.cascade.interactionEventsAvailable = false
+    }
+
     @Given("the gyroscope reports a motionless device")
     fun motionlessDevice() {
         // Constant magnitude == zero variance == phone is lying still.

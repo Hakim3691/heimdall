@@ -37,6 +37,13 @@ class TriggerCascade(
     var lastObservation: FrameObservation? = null
         private set
 
+    /**
+     * True while interaction events arrive from [com.heimdall.service.HeimdallAccessibilityService].
+     * When false, frame changes are the only interaction signal left, so they re-arm hesitation.
+     */
+    @Volatile
+    var interactionEventsAvailable: Boolean = true
+
     fun onMagnitude(magnitude: Float) = motion.onMagnitude(magnitude)
 
     fun onInteraction() = hesitation.onInteraction(clock.nowMs())
@@ -45,23 +52,23 @@ class TriggerCascade(
      * Feeds one captured frame (already downscaled by the platform adapter) and records whether it
      * is static relative to the previous one.
      */
-    fun onFrame(image: RgbImage): FrameObservation {
-        val signature = FrameDiffEngine.signature(image)
-        val previous = previousSignature
-        val distance = previous?.hammingTo(signature)
-        val stable = distance != null && distance <= config.frameHashMaxHammingDistance
-        previousSignature = signature
-        frameStable = stable
-        return FrameObservation(signature, distance, stable).also { lastObservation = it }
-    }
+    fun onFrame(image: RgbImage): FrameObservation = record(FrameDiffEngine.signature(image))
 
     /** Feeds a precomputed signature (used by the service to avoid hashing twice). */
-    fun onSignature(signature: FrameSignature): FrameObservation {
+    fun onSignature(signature: FrameSignature): FrameObservation = record(signature)
+
+    private fun record(signature: FrameSignature): FrameObservation {
         val previous = previousSignature
         val distance = previous?.hammingTo(signature)
         val stable = distance != null && distance <= config.frameHashMaxHammingDistance
         previousSignature = signature
         frameStable = stable
+        if (config.frameChangeArmsHesitation && !interactionEventsAvailable && distance != null && !stable) {
+            // No accessibility stream: a screen that changed is the user doing something. A static
+            // screen then lets the normal hesitation threshold elapse, so the cascade still needs
+            // a stable frame and a handheld device before it fires.
+            hesitation.onInteraction(clock.nowMs())
+        }
         return FrameObservation(signature, distance, stable).also { lastObservation = it }
     }
 

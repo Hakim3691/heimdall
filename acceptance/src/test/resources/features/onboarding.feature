@@ -8,9 +8,9 @@ Feature: Onboarding and privilege readiness
     Given a fresh install with no models
     Then the next onboarding step is OVERLAY
 
-  Scenario: Accessibility is requested after the overlay
+  Scenario: Accessibility is optional and never blocks onboarding
     Given overlay granted but nothing else
-    Then the next onboarding step is ACCESSIBILITY
+    Then the next onboarding step is NOTIFICATIONS
 
   Scenario: Notifications are requested before models
     Given overlay and accessibility granted

@@ -1,21 +1,25 @@
 package com.heimdall
 
 import android.content.Context
+import android.os.Build
 import com.heimdall.common.Clock
 import com.heimdall.common.HeimdallLog
 import com.heimdall.common.RingBufferLog
 import com.heimdall.diagnostics.RotatingFileLog
+import com.heimdall.diagnostics.SessionStats
 import com.heimdall.engine.governor.ThermalPowerGovernor
 import com.heimdall.engine.trigger.TriggerCascade
 import com.heimdall.engine.vlm.FakeVlmEngine
 import com.heimdall.engine.vlm.NativeVlmEngine
 import com.heimdall.engine.vlm.VlmEngine
+import com.heimdall.engine.vlm.VlmRuntime
 import com.heimdall.model.Anchor
 import com.heimdall.model.HeimdallConfig
 import com.heimdall.model.ModelValidation
 import com.heimdall.model.OverlayConfig
 import com.heimdall.model.TextMetrics
 import com.heimdall.model.VlmConfig
+import com.heimdall.service.HeimdallCaptureService
 import com.heimdall.settings.SettingsStore
 import com.heimdall.storage.ModelStore
 import com.heimdall.ui.overlay.OverlayWindowController
@@ -45,6 +49,9 @@ class AppGraph(context: Context) {
 
     /** Model weights come from the documents the user picked in the system file picker. */
     val models: ModelStore = ModelStore(appContext, settings, log)
+
+    /** Counters for the current or last capture session, exported with the diagnostics report. */
+    val session: SessionStats = SessionStats()
 
     /** Configuration snapshot; overlay options that the user can toggle are read from settings. */
     val config: HeimdallConfig
@@ -99,8 +106,17 @@ class AppGraph(context: Context) {
         return NativeVlmEngine("", "", config.vlm, log, clock)
     }
 
+    /**
+     * Real native-runtime state for diagnostics.
+     *
+     * This used to report `models.allReady()`, which said "nativeVlm=true" purely because two files
+     * had been picked — even when `libheimdall.so` was missing from the APK. The library load result,
+     * its failure reason and the device ABI are the facts that actually explain an unloaded backend.
+     */
     fun nativeStatus(): String = runCatching {
-        "nativeVlm=${models.allReady()}"
+        "nativeVlm=${VlmRuntime.isLoaded} backend=${VlmRuntime.backend()} " +
+            "abi=${Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"} " +
+            "loadFailure=${VlmRuntime.loadFailure ?: "none"}"
     }.getOrDefault("nativeVlm=unknown")
 
     /** Diagnostics bundle for the export flow: environment + recent log lines. */
@@ -108,6 +124,8 @@ class AppGraph(context: Context) {
         appendLine("# Heimdall diagnostics")
         appendLine("version: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
         appendLine("models: ${models.describe()}")
+        appendLine("native: ${nativeStatus()}")
+        appendLine("capture: running=${HeimdallCaptureService.isRunning} ${session.describe()}")
         appendLine("overlay: ${config.overlay}")
         appendLine("trigger: ${config.trigger}")
         appendLine("runtime: sdk=${android.os.Build.VERSION.SDK_INT} device=${android.os.Build.MODEL}")

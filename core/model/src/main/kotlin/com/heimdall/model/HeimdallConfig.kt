@@ -19,6 +19,12 @@ data class TriggerConfig(
     val frameHashMaxHammingDistance: Int = 2,
     /** After rendering a tooltip, suppress further inference for this long. */
     val postInterventionCooldownMs: Long = 20_000L,
+    /**
+     * When the accessibility stream is unavailable, a frame that changes beyond the stability
+     * threshold counts as a user interaction and restarts the hesitation window. Without this the
+     * cascade could never leave the hesitation gate on a device where the service is blocked.
+     */
+    val frameChangeArmsHesitation: Boolean = true,
     /** Sensor sampling period hint in microseconds (SENSOR_DELAY_UI ≈ 60 ms). */
     val gyroSamplingPeriodUs: Int = 60_000,
 ) {

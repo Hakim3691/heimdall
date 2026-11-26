@@ -7,6 +7,8 @@ import com.heimdall.model.ModelValidation
 import com.heimdall.model.ModelValidator
 import io.cucumber.java.en.Given
 import io.cucumber.java.en.Then
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /** FR-07: model file validation. */
 class ModelSteps(private val world: World) {
@@ -53,6 +55,41 @@ class ModelSteps(private val world: World) {
         file = ModelFile.VISION
         sizeBytes = size * gigabyte
         header = ggufHeader
+    }
+
+    @Given("a language model of {int} GB with GGUF architecture {string}")
+    fun languageModelArchitecture(size: Int, architecture: String) {
+        file = ModelFile.LANGUAGE
+        sizeBytes = size * gigabyte
+        header = ggufWithArchitecture(architecture)
+    }
+
+    @Given("a vision projector of {int} GB with GGUF architecture {string}")
+    fun visionProjectorArchitecture(size: Int, architecture: String) {
+        file = ModelFile.VISION
+        sizeBytes = size * gigabyte
+        header = ggufWithArchitecture(architecture)
+    }
+
+    /**
+     * A minimal GGUF v3 metadata prefix: magic, no tensors, one string key `general.architecture`.
+     * This is the shape [ModelValidator] reads when deciding compatibility.
+     */
+    private fun ggufWithArchitecture(architecture: String): ByteArray {
+        val key = "general.architecture".toByteArray()
+        val value = architecture.toByteArray()
+        return ByteBuffer.allocate(4 + 4 + 8 + 8 + 8 + key.size + 4 + 8 + value.size)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .put("GGUF".toByteArray())
+            .putInt(3)
+            .putLong(0L)
+            .putLong(1L)
+            .putLong(key.size.toLong())
+            .put(key)
+            .putInt(8)
+            .putLong(value.size.toLong())
+            .put(value)
+            .array()
     }
 
     @Given("{int} GB of free storage")

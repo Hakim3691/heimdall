@@ -20,6 +20,7 @@ class HeimdallAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         graph = (application as HeimdallApplication).graph
         connected = true
+        graph.cascade.interactionEventsAvailable = true
         graph.log.info(TAG, "accessibility service connected")
     }
 
@@ -40,6 +41,7 @@ class HeimdallAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         connected = false
+        runCatching { (application as HeimdallApplication).graph.cascade.interactionEventsAvailable = false }
         super.onDestroy()
     }
 

@@ -28,6 +28,14 @@ Feature: Three-layer trigger cascade
     When the cascade is evaluated
     Then the cascade passes
 
+  Scenario: Without the accessibility stream a changing screen arms hesitation
+    Given the accessibility interaction stream is unavailable
+    And the gyroscope reports a handheld micro-tremor
+    And two frames differ beyond the stability threshold
+    When a third identical frame is captured
+    And 2 more seconds pass
+    Then the cascade passes
+
   Scenario: A tap restarts the hesitation window
     Given the gyroscope reports a handheld micro-tremor
     And the user tapped 1 second ago

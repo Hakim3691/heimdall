@@ -30,6 +30,15 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_NOTIFICATION_PROMPTED, false)
         set(value) = prefs.edit().putBoolean(KEY_NOTIFICATION_PROMPTED, value).apply()
 
+    /**
+     * True once the system cast dialog has been shown. The consent itself is per session and cannot
+     * be persisted, but the *prompt* should not reappear on every app launch: after the first run
+     * the user starts capture explicitly from the main button.
+     */
+    var projectionPrompted: Boolean
+        get() = prefs.getBoolean(KEY_PROJECTION_PROMPTED, false)
+        set(value) = prefs.edit().putBoolean(KEY_PROJECTION_PROMPTED, value).apply()
+
     /** Persisted Storage Access Framework document for a model role, or null when unset. */
     fun modelUri(role: ModelRole): String? = prefs.getString(KEY_MODEL_URI + role.name, null)
 
@@ -44,6 +53,7 @@ class SettingsStore(context: Context) {
         const val KEY_EXPANDED_HELP = "expanded_help_enabled"
         const val KEY_STARTED = "has_started_capture"
         const val KEY_NOTIFICATION_PROMPTED = "notification_prompt_requested"
+        const val KEY_PROJECTION_PROMPTED = "projection_prompt_requested"
         const val KEY_MODEL_URI = "model_uri_"
     }
 }

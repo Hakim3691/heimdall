@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.provider.OpenableColumns
 import com.heimdall.common.HeimdallLog
+import com.heimdall.model.GgufMetadata
 import com.heimdall.model.ModelFile
 import com.heimdall.model.ModelIssue
 import com.heimdall.model.ModelValidation
@@ -39,9 +41,59 @@ class ModelStore(
     fun uriFor(file: ModelFile): Uri? =
         settings.modelUri(file.role)?.let { stored -> runCatching { Uri.parse(stored) }.getOrNull() }
 
-    /** Display name of the current document, for onboarding and diagnostics. */
-    fun displayName(file: ModelFile): String? =
-        uriFor(file)?.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+    /**
+     * Display name of the current document, for onboarding and diagnostics.
+     *
+     * The provider's DISPLAY_NAME column is the real file name; `lastPathSegment` is only a fallback
+     * because a document id can be an encoded path (or a numeric id for some providers).
+     */
+    fun displayName(file: ModelFile): String? {
+        val uri = uriFor(file) ?: return null
+        val fromProvider = runCatching {
+            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull()
+        return fromProvider?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * One-line description of the selected document: file name, size and GGUF architecture.
+     *
+     * Showing what was actually picked is the fix for the old hardcoded "MiniCPM-V 2.6" label that
+     * appeared above ternary/Bonsai files.
+     */
+    fun summary(file: ModelFile): String? {
+        val name = displayName(file) ?: return null
+        val uri = uriFor(file) ?: return name
+        return runCatching {
+            val size = resolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
+            val architecture = resolver.openInputStream(uri)?.use { stream ->
+                val prefix = ByteArray(ModelValidator.METADATA_PREFIX_BYTES)
+                val read = stream.read(prefix)
+                if (read <= 0) null else GgufMetadata.parse(prefix.copyOf(read))?.architecture
+            }
+            buildString {
+                append(name)
+                if (size > 0L) {
+                    append(" · ")
+                    append(formatBytes(size))
+                }
+                if (!architecture.isNullOrBlank()) {
+                    append(" · ")
+                    append(architecture)
+                }
+            }
+        }.getOrDefault(name)
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        val gigabytes = bytes / 1_000_000_000.0
+        if (gigabytes >= 1.0) return String.format(java.util.Locale.US, "%.1f GB", gigabytes)
+        val megabytes = bytes / 1_000_000.0
+        return String.format(java.util.Locale.US, "%.0f MB", megabytes)
+    }
 
     /**
      * Remembers the picked document and keeps read access across process restarts.
@@ -81,12 +133,14 @@ class ModelStore(
                     "the document has no readable size",
                 )
             }
-            val header = ByteArray(4)
-            val read = resolver.openInputStream(uri)?.use { stream -> stream.read(header) } ?: 0
+            // Read a metadata prefix, not just the magic: the architecture check needs it, and a
+            // 64 KiB read is negligible next to the multi-gigabyte weights.
+            val prefix = ByteArray(ModelValidator.METADATA_PREFIX_BYTES)
+            val read = resolver.openInputStream(uri)?.use { stream -> stream.read(prefix) } ?: 0
             ModelValidator.validate(
                 file = file,
                 sizeBytes = size,
-                header = if (read > 0) header.copyOf(read) else ByteArray(0),
+                header = if (read > 0) prefix.copyOf(read) else ByteArray(0),
                 freeBytes = freeBytes(),
             )
         }.getOrElse { error ->
