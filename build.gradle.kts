@@ -37,7 +37,9 @@ spotless {
     }
     format("misc") {
         target("**/*.md", "**/*.yml", "**/*.yaml", "**/*.json", "**/.gitignore")
-        targetExclude("**/build/**", "**/node_modules/**", "**/.gradle/**", "**/third_party/**")
+        // .cxx is the CMake scratch tree externalNativeBuild writes on every local native build;
+        // its generated .json files are not sources and must not make the format gate fail.
+        targetExclude("**/build/**", "**/node_modules/**", "**/.gradle/**", "**/third_party/**", "**/.cxx/**")
         trimTrailingWhitespace()
         endWithNewline()
     }

@@ -81,20 +81,21 @@ class AppGraph(context: Context) {
         val pairIssue = models.pairIssue(validation)
         val ready = validation.values.all { it is ModelValidation.Ready } && pairIssue == null
         if (ready) {
-            // Zero copy: the selected documents stay where they are and the mounted descriptors
-            // keep their /proc/self/fd paths valid for the whole session.
-            val mount = models.mount()
-            if (mount != null) {
+            // The language weights are read from the picked document's own descriptor, so the
+            // multi-gigabyte file is never copied and never reopened through /proc/self/fd. The
+            // projector has to be a real file for mtmd, and is imported into app storage once.
+            val prepared = models.prepare()
+            if (prepared != null) {
                 return NativeVlmEngine(
-                    modelPath = mount.languagePath,
-                    mmprojPath = mount.visionPath,
+                    languageDescriptor = prepared.languageFd,
+                    mmprojPath = prepared.projectorPath,
                     config = config.vlm,
                     log = log,
                     clock = clock,
-                    mountedFiles = mount,
+                    languageHandle = prepared,
                 )
             }
-            log.warn(TAG, "selected model documents could not be mounted for inference")
+            log.warn(TAG, "selected model documents could not be prepared for inference")
         } else if (pairIssue != null) {
             log.warn(TAG, "model pair rejected: ${pairIssue.detail}")
         }
@@ -108,7 +109,7 @@ class AppGraph(context: Context) {
         val reason = validation.entries.joinToString { (file, verdict) -> "${file.role}=$verdict" } +
             (pairIssue?.let { ", pair=${it.detail}" } ?: "")
         log.warn(TAG, "model files unavailable; starting native engine without weights: $reason")
-        return NativeVlmEngine("", "", config.vlm, log, clock)
+        return NativeVlmEngine(NativeVlmEngine.NO_LANGUAGE_DESCRIPTOR, "", config.vlm, log, clock)
     }
 
     /**
@@ -119,16 +120,18 @@ class AppGraph(context: Context) {
      * its failure reason and the device ABI are the facts that actually explain an unloaded backend.
      */
     fun nativeStatus(): String = runCatching {
-        "nativeVlm=${VlmRuntime.isLoaded} backend=${VlmRuntime.backend()} " +
+        "nativeLibrary=${VlmRuntime.isLoaded} backend=${VlmRuntime.backend()} " +
             "abi=${Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"} " +
             "loadFailure=${VlmRuntime.loadFailure ?: "none"}"
-    }.getOrDefault("nativeVlm=unknown")
+    }.getOrDefault("nativeLibrary=unknown")
 
     /**
      * Result of the last [probeModels] run, or null when it has not run for this selection.
      *
-     * Metadata rejects what it can prove is wrong; this holds the runtime's own verdict on the
-     * exact pair, which is the only way to know a Qwen3.5-VL/Bonsai pair really loads.
+     * Metadata rejects what it can prove is wrong; this holds llama.cpp's own verdict on the exact
+     * pair, which is the only way to know a Qwen3.5-VL/Bonsai pair really loads. It is never mixed
+     * with the metadata verdict: `models.describe()` reports what the files claim, this reports
+     * what the runtime did.
      */
     @Volatile
     var modelProbe: String? = null
@@ -149,7 +152,7 @@ class AppGraph(context: Context) {
      */
     fun probeModels(onDone: (String) -> Unit = {}) {
         if (HeimdallCaptureService.isRunning) {
-            onDone("not tested: stop the capture session first")
+            onDone("runtime not tested: stop the capture session first")
             return
         }
         val key = ModelFile.entries.joinToString("|") { models.uriFor(it)?.toString().orEmpty() }
@@ -162,55 +165,68 @@ class AppGraph(context: Context) {
             }
             val issue = models.pairIssue()
             if (issue != null) {
-                val message = "pair rejected: ${issue.detail}"
+                val message = "runtime not tested: the GGUF metadata already rejects the pair (${issue.detail})"
                 modelProbe = message
                 probeKey = key
                 onDone(message)
                 return
             }
-            val mount = models.mount() ?: run {
-                val message = "not tested: the selected documents cannot be mounted"
-                modelProbe = message
-                onDone(message)
-                return
-            }
             probing = true
-            Thread({
-                val probe = try {
-                    VlmRuntime.probePair(mount.languagePath, mount.visionPath, log)
-                } finally {
-                    runCatching { mount.close() }
-                }
-                val message = if (probe.ready) {
-                    "pair loads on this device (${probe.message})"
-                } else {
-                    "pair rejected by llama.cpp: ${probe.message}"
-                }
-                synchronized(this) {
-                    modelProbe = message
-                    probeNativeLog = probe.nativeLog
-                    probeKey = key
-                    probing = false
-                }
-                if (probe.ready) {
-                    log.info(TAG, "model pair probe: $message")
-                } else {
-                    log.warn(TAG, "model pair probe: $message")
-                    probe.nativeLog.lineSequence()
-                        .filter { it.isNotBlank() }
-                        .forEach { log.info(TAG, "llama.cpp: $it") }
-                }
-                onDone(message)
-            }, "heimdall-model-probe").start()
         }
+        // Opening the descriptor and importing the projector are both disk work, so they happen on
+        // the probe thread rather than on whichever thread tapped the button.
+        Thread({
+            val probe = runCatching<ProbeOutcome?> {
+                val prepared = models.prepare()
+                if (prepared == null) {
+                    null
+                } else {
+                    try {
+                        ProbeOutcome(VlmRuntime.probePair(prepared.languageFd, prepared.projectorPath, log))
+                    } finally {
+                        prepared.close()
+                    }
+                }
+            }.getOrElse { error ->
+                log.warn(TAG, "model probe failed", error)
+                ProbeOutcome(
+                    VlmRuntime.PairProbe(false, error.message ?: error.javaClass.simpleName),
+                )
+            }
+            val message = when {
+                probe == null -> "runtime not tested: the selected documents cannot be opened"
+                probe.probe.ready -> "runtime loads this pair on this device (${probe.probe.message})"
+                else -> "runtime rejected the pair: ${probe.probe.message}"
+            }
+            synchronized(this) {
+                modelProbe = message
+                probeNativeLog = probe?.probe?.nativeLog.orEmpty()
+                probeKey = key
+                probing = false
+            }
+            if (probe?.probe?.ready == true) {
+                log.info(TAG, "model pair probe: $message")
+            } else {
+                log.warn(TAG, "model pair probe: $message")
+                probe?.probe?.nativeLog.orEmpty().lineSequence()
+                    .filter { it.isNotBlank() }
+                    .forEach { log.info(TAG, "llama.cpp: $it") }
+            }
+            onDone(message)
+        }, "heimdall-model-probe").start()
     }
+
+    /** Wrapper so `null` can mean "the documents could not even be opened". */
+    private class ProbeOutcome(val probe: VlmRuntime.PairProbe)
 
     /** Diagnostics bundle for the export flow: environment + recent log lines. */
     fun diagnosticsReport(): String = buildString {
         appendLine("# Heimdall diagnostics")
         appendLine("version: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-        appendLine("models: ${models.describe()}")
-        appendLine("modelProbe: ${modelProbe ?: "not run"}")
+        // Metadata and the runtime verdict are separate lines on purpose: a "ready" metadata
+        // verdict only means the files look compatible, not that llama.cpp loaded them.
+        appendLine("metadata: ${models.describe()}")
+        appendLine("runtime.pair: ${modelProbe ?: "not tested (metadata only; tap 'Test pair')"}")
         appendLine("native: ${nativeStatus()}")
         if (probeNativeLog.isNotBlank()) {
             appendLine()

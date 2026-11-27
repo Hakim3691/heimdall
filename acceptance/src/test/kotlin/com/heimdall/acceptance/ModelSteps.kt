@@ -1,12 +1,15 @@
 package com.heimdall.acceptance
 
 import com.google.common.truth.Truth.assertThat
+import com.heimdall.model.GgufTensorScan
+import com.heimdall.model.GgufTensorScanner
 import com.heimdall.model.ModelFile
 import com.heimdall.model.ModelIssue
 import com.heimdall.model.ModelValidation
 import com.heimdall.model.ModelValidator
 import io.cucumber.java.en.Given
 import io.cucumber.java.en.Then
+import java.io.ByteArrayInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -21,6 +24,9 @@ class ModelSteps(private val world: World) {
     private var sizeBytes: Long = 0
     private var header: ByteArray = ggufHeader
     private var freeBytes: Long = 0
+
+    /** Tensor table as the pick-time scan reports it; null means "packing not inspected". */
+    private var tensors: GgufTensorScan? = null
 
     @Given("a language model of {int} GB with a GGUF header")
     fun languageModelGb(size: Int) {
@@ -62,6 +68,44 @@ class ModelSteps(private val world: World) {
         file = ModelFile.LANGUAGE
         sizeBytes = size * gigabyte
         header = ggufWithArchitecture(architecture)
+    }
+
+    /**
+     * The packing question: a supported architecture says nothing about the tensor types inside,
+     * so the pick-time scan is the only thing that can refuse `PQ2_0` before a huge load.
+     */
+    @Given("a language model of {int} GB with GGUF architecture {string} and tensor type {int}")
+    fun languageModelTensorType(size: Int, architecture: String, typeId: Int) {
+        file = ModelFile.LANGUAGE
+        sizeBytes = size * gigabyte
+        // A real GGUF v3 table, scanned exactly like the pick-time check scans a document.
+        val bytes = ggufWithTensor(architecture, typeId)
+        header = bytes
+        tensors = GgufTensorScanner.scan(ByteArrayInputStream(bytes))
+    }
+
+    /** GGUF v3 with `general.architecture` and one tensor of [typeId]. */
+    private fun ggufWithTensor(architecture: String, typeId: Int): ByteArray {
+        val key = "general.architecture".toByteArray()
+        val value = architecture.toByteArray()
+        val name = "blk.0.attn_q.weight".toByteArray()
+        val size = 4 + 4 + 8 + 8 +
+            (8 + key.size + 4 + 8 + value.size) +
+            (8 + name.size + 4 + 8 + 4 + 8)
+        return ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN)
+            .put("GGUF".toByteArray())
+            .putInt(3)
+            .putLong(1L)
+            .putLong(1L)
+            .putLong(key.size.toLong()).put(key)
+            .putInt(8)
+            .putLong(value.size.toLong()).put(value)
+            .putLong(name.size.toLong()).put(name)
+            .putInt(1)
+            .putLong(1L)
+            .putInt(typeId)
+            .putLong(0L)
+            .array()
     }
 
     @Given("a vision projector of {int} GB with GGUF architecture {string}")
@@ -135,13 +179,13 @@ class ModelSteps(private val world: World) {
     @Given("{int} GB of free storage")
     fun freeStorageGb(size: Int) {
         freeBytes = size * gigabyte
-        world.validation = ModelValidator.validate(file, sizeBytes, header, freeBytes)
+        world.validation = ModelValidator.validate(file, sizeBytes, header, freeBytes, tensors)
     }
 
     @Given("{int} MB of free storage")
     fun freeStorageMb(size: Int) {
         freeBytes = size * megabyte
-        world.validation = ModelValidator.validate(file, sizeBytes, header, freeBytes)
+        world.validation = ModelValidator.validate(file, sizeBytes, header, freeBytes, tensors)
     }
 
     @Then("the model validation result is ready")
@@ -156,7 +200,15 @@ class ModelSteps(private val world: World) {
         assertThat((validation as ModelValidation.Invalid).issue).isEqualTo(ModelIssue.valueOf(issue))
     }
 
+    /** The rejection has to name the packing, because that is what the user can act on. */
+    @Then("the model problem names {word}")
+    fun problemNames(word: String) {
+        val validation = result()
+        assertThat(validation).isInstanceOf(ModelValidation.Invalid::class.java)
+        assertThat((validation as ModelValidation.Invalid).detail.orEmpty()).contains(word)
+    }
+
     /** Validates with the scenario's current file facts; the free-space step may have pre-computed it. */
     private fun result(): ModelValidation =
-        world.validation ?: ModelValidator.validate(file, sizeBytes, header, freeBytes)
+        world.validation ?: ModelValidator.validate(file, sizeBytes, header, freeBytes, tensors)
 }

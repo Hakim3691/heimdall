@@ -58,6 +58,17 @@ class NativeLoadFailureTest {
     }
 
     @Test
+    fun `an unopenable weights document is reported as a lost grant, not a bad pair`() {
+        val log = "error: gguf_init_from_file: failed to open GGUF file '/proc/self/fd/168' " +
+            "(Permission denied)"
+
+        val message = NativeLoadFailure.explain(generic, log)
+
+        assertThat(message).contains("Pick the file again")
+        assertThat(message).doesNotContain("PrismML")
+    }
+
+    @Test
     fun `projector failures keep llama's own words`() {
         val log = "error: clip_model_load: expected 'clip.projector_type' but got 'resampler'"
 

@@ -61,6 +61,17 @@ Feature: Local model storage
     And 20 GB of free storage
     Then the model validation result is ready
 
+  Scenario: A PQ2_0-packed language model is rejected at pick time
+    Given a language model of 5 GB with GGUF architecture "qwen35" and tensor type 142
+    And 20 GB of free storage
+    Then the model validation reports INCOMPATIBLE_MODEL
+    And the model problem names PQ2_0
+
+  Scenario: The Q2_0 packing of the same weights is accepted
+    Given a language model of 5 GB with GGUF architecture "qwen35" and tensor type 42
+    And 20 GB of free storage
+    Then the model validation result is ready
+
   Scenario: A projector with an unknown type is rejected
     Given a vision projector of 1 GB with GGUF architecture "clip" and projector type "bonsai_clip"
     And 20 GB of free storage

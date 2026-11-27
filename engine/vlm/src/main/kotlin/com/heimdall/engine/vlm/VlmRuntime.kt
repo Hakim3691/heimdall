@@ -33,16 +33,17 @@ object VlmRuntime {
         }
 
     /**
-     * Loads [modelPath] + [mmprojPath] for real, runs one tiny frame, then releases the runtime.
+     * Loads the weights behind [languageFd] plus [projectorPath] for real, runs one tiny frame, then
+     * releases the runtime.
      *
      * This is the authoritative compatibility check: the GGUF metadata rules predict, but only
      * llama.cpp knows whether a language architecture and a projector type actually work together.
-     * Callers must ensure no capture session owns the runtime, because the probe frees it at the
-     * end.
+     * The descriptor must stay open for the call (the native loader duplicates it); callers must
+     * also ensure no capture session owns the runtime, because the probe frees it at the end.
      */
     fun probePair(
-        modelPath: String,
-        mmprojPath: String,
+        languageFd: Int,
+        projectorPath: String,
         log: HeimdallLog = HeimdallLog.NONE,
     ): PairProbe {
         if (!NativeVlmBridge.ensureLoaded(log)) {
@@ -50,8 +51,8 @@ object VlmRuntime {
         }
         return try {
             val loaded = NativeVlmBridge.nativeInit(
-                modelPath = modelPath,
-                mmprojPath = mmprojPath,
+                languageFd = languageFd,
+                mmprojPath = projectorPath,
                 contextSize = 512,
                 threads = 2,
                 gpuLayers = 0,

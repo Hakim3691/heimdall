@@ -74,6 +74,9 @@ class HeimdallCaptureService : Service() {
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+
+    /** Created off the main thread (opening the weights and importing the projector touch disk). */
+    @Volatile
     private var engine: VlmEngine? = null
     private var gyro: GyroMonitor? = null
     private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
@@ -173,9 +176,6 @@ class HeimdallCaptureService : Service() {
         )
 
         graph.session.reset()
-        val createdEngine = graph.createEngine()
-        engine = createdEngine
-        graph.session.engineStatus = createdEngine.backendDescription
         // Accessibility is optional: when its service is not connected, the cascade derives
         // interactions from frame changes instead of silently never leaving the hesitation gate.
         graph.cascade.interactionEventsAvailable = HeimdallAccessibilityService.connected
@@ -183,18 +183,27 @@ class HeimdallCaptureService : Service() {
         gyro = GyroMonitor(this, graph.cascade, graph.log).also { it.start() }
         registerThermalListener()
         graph.settings.hasStartedCapture = true
+        isRunning = true
 
-        // Warm the runtime off the main thread: the first inference would otherwise pay the whole
-        // model load while the user waits. The engine stays lazy, so a failure only disables inference.
+        // Engine creation and the warm-up both happen off the main thread: the first load opens the
+        // multi-gigabyte document descriptor and, on a new pick, imports the projector (~1 GB).
+        // Frames seen before the engine exists are simply skipped; it stays lazy, so a failure only
+        // disables inference.
         serviceScope.launch {
+            val createdEngine = graph.createEngine()
+            if (!isRunning) {
+                // The session stopped while the weights were being opened: do not leak the engine.
+                runCatching { createdEngine.close() }
+                return@launch
+            }
+            engine = createdEngine
             (createdEngine as? NativeVlmEngine)?.ensureInitialised()
             graph.session.engineStatus = createdEngine.backendDescription
             graph.log.info(TAG, "engine status=${graph.session.engineStatus}")
         }
 
         captureJob = serviceScope.launch { captureLoop() }
-        graph.log.info(TAG, "capture started ${width}x$height backend=${engine?.backendDescription}")
-        isRunning = true
+        graph.log.info(TAG, "capture started ${width}x$height (engine loading in background)")
     }
 
     // ---- pipeline --------------------------------------------------------------------------

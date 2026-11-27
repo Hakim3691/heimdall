@@ -38,9 +38,15 @@ internal object NativeVlmBridge {
 
     private var loaded = false
 
-    /** Loads language weights + vision projector. Returns false when the runtime refuses them. */
+    /**
+     * Loads language weights + vision projector. Returns false when the runtime refuses them.
+     *
+     * [languageFd] is the read-only descriptor of the picked document; the native side duplicates it
+     * and reads the GGUF from it, so no `/proc/self/fd/<n>` path is ever reopened. A negative value
+     * means no weights are selected.
+     */
     external fun nativeInit(
-        modelPath: String,
+        languageFd: Int,
         mmprojPath: String,
         contextSize: Int,
         threads: Int,

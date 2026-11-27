@@ -17,7 +17,9 @@
 #include <jni.h>
 
 #include <android/log.h>
+#include <unistd.h>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -43,6 +45,10 @@ namespace {
 struct RuntimeState {
     llama_model * model = nullptr;
     mtmd_context * vision = nullptr;
+    // The weights are read from a duplicate of the document descriptor the app holds. llama.cpp
+    // does not take ownership of a FILE* it is handed, so this stream stays open for as long as
+    // the model does and is closed in releaseLocked().
+    FILE * modelFile = nullptr;
     int contextSize = 2048;
     int threads = 4;
     int gpuLayers = 0;
@@ -194,10 +200,20 @@ void releaseLocked() {
         llama_model_free(g_state.model);
         g_state.model = nullptr;
     }
+    if (g_state.modelFile != nullptr) {
+        // Owned here, not by llama.cpp: see nativeInit().
+        std::fclose(g_state.modelFile);
+        g_state.modelFile = nullptr;
+    }
     if (g_state.backendInitialised) {
         llama_backend_free();
         g_state.backendInitialised = false;
     }
+}
+
+bool logMentionsMmapRefusal() {
+    const std::string tail = logTailLocked();
+    return tail.find("mmap") != std::string::npos;
 }
 
 /** Converts an ARGB int buffer into the packed RGB byte layout mtmd expects. */
@@ -219,28 +235,51 @@ std::vector<unsigned char> argbToRgb(const int32_t * argb, int width, int height
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_heimdall_engine_vlm_NativeVlmBridge_nativeInit(
         JNIEnv * env, jobject /* thiz */,
-        jstring modelPath, jstring mmprojPath,
+        jint languageFd, jstring mmprojPath,
         jint contextSize, jint threads, jint gpuLayers) {
     std::lock_guard<std::mutex> guard(g_mutex);
     g_last_error.clear();
     if (g_state.model != nullptr && g_state.vision != nullptr) {
         return JNI_TRUE;
     }
-
-    const char * modelPathChars = env->GetStringUTFChars(modelPath, nullptr);
-    const char * mmprojPathChars = env->GetStringUTFChars(mmprojPath, nullptr);
-    if (modelPathChars == nullptr || mmprojPathChars == nullptr) {
-        LOGE("init: could not read model paths");
-        if (modelPathChars) env->ReleaseStringUTFChars(modelPath, modelPathChars);
-        if (mmprojPathChars) env->ReleaseStringUTFChars(mmprojPath, mmprojPathChars);
+    if (languageFd < 0) {
+        LOGE("init: no language descriptor was supplied");
+        g_last_error = "no language weights are selected";
         return JNI_FALSE;
     }
-    const std::string modelPathStr(modelPathChars);
+
+    const char * mmprojPathChars = env->GetStringUTFChars(mmprojPath, nullptr);
+    if (mmprojPathChars == nullptr) {
+        LOGE("init: could not read the projector path");
+        return JNI_FALSE;
+    }
     const std::string mmprojPathStr(mmprojPathChars);
-    env->ReleaseStringUTFChars(modelPath, modelPathChars);
     env->ReleaseStringUTFChars(mmprojPath, mmprojPathChars);
 
     installLogCaptureLocked();
+
+    // Load the weights from the document's own descriptor. Reopening the path
+    // /proc/self/fd/<n> (what llama_model_load_from_file() would do) is refused by Android content
+    // providers, which is the "failed to open GGUF file ... Permission denied" users saw; keeping
+    // our own duplicate of the fd avoids that reopen completely. The app keeps its
+    // ParcelFileDescriptor open for the session as well, so the duplicate is never the last
+    // reference either.
+    const int ownedFd = dup(languageFd);
+    if (ownedFd < 0) {
+        LOGE("init: dup(%d) failed: %s", languageFd, strerror(errno));
+        g_last_error = std::string("the language weights descriptor could not be duplicated: ") + strerror(errno);
+        return JNI_FALSE;
+    }
+    FILE * modelFile = fdopen(ownedFd, "rb");
+    if (modelFile == nullptr) {
+        LOGE("init: fdopen(%d) failed: %s", ownedFd, strerror(errno));
+        close(ownedFd);
+        g_last_error = std::string("the language weights could not be opened for reading: ") + strerror(errno);
+        return JNI_FALSE;
+    }
+    g_state.modelFile = modelFile;
+    rewind(modelFile);
+
     llama_backend_init();
     g_state.backendInitialised = true;
 
@@ -251,13 +290,25 @@ Java_com_heimdall_engine_vlm_NativeVlmBridge_nativeInit(
     modelParams.n_gpu_layers = 0;
 #endif
     modelParams.load_mode = LLAMA_LOAD_MODE_MMAP;
-    g_state.model = llama_model_load_from_file(modelPathStr.c_str(), modelParams);
+    g_state.model = llama_model_load_from_file_ptr(modelFile, modelParams);
+    // A SAF descriptor can be backed by FUSE, which rejects mmap while allowing read(); llama.cpp
+    // fails the whole load when the mapping fails, so retry once reading through the same
+    // descriptor instead of mapping it. The retry is cheap: the mapping is created before any
+    // tensor data is read.
+    if (g_state.model == nullptr && logMentionsMmapRefusal()) {
+        LOGW("init: the weights descriptor cannot be memory-mapped, reading it instead");
+        rewind(modelFile);
+        modelParams.load_mode = LLAMA_LOAD_MODE_NONE;
+        g_state.model = llama_model_load_from_file_ptr(modelFile, modelParams);
+    }
     if (g_state.model == nullptr) {
-        LOGE("init: failed to load language model %s", modelPathStr.c_str());
+        LOGE("init: failed to load the language weights from descriptor %d", languageFd);
         g_last_error = "llama.cpp refused the language weights";
         releaseLocked();
         return JNI_FALSE;
     }
+    LOGI("init: language weights loaded from the picked descriptor (load_mode=%s)",
+         llama_load_mode_name(modelParams.load_mode));
 
     mtmd_context_params visionParams = mtmd_context_params_default();
 #ifdef HEIMDALL_HAS_VULKAN

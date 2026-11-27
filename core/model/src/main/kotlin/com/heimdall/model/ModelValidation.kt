@@ -118,11 +118,16 @@ object ModelValidator {
     /** ggml's name for the multimodal projector graph. */
     private const val VISION_ARCHITECTURE = "clip"
 
+    /**
+     * @param tensors tensor types from [GgufTensorScanner], when the adapter managed to read them.
+     *   Null (or an incomplete scan) means packing is unverified, never that it is unsupported.
+     */
     fun validate(
         file: ModelFile,
         sizeBytes: Long,
         header: ByteArray,
         freeBytes: Long,
+        tensors: GgufTensorScan? = null,
     ): ModelValidation {
         if (sizeBytes <= 0L) {
             return ModelValidation.Invalid(file, ModelIssue.MISSING, "file is absent or empty")
@@ -145,10 +150,12 @@ object ModelValidator {
             )
         }
         val info = GgufMetadata.parse(header)
-        return incompatible(file, info) ?: ModelValidation.Ready(
-            architecture = info?.architecture,
-            projectorType = info?.projectorType,
-        )
+        return incompatible(file, info)
+            ?: packingProblem(file, tensors)
+            ?: ModelValidation.Ready(
+                architecture = info?.architecture,
+                projectorType = info?.projectorType,
+            )
     }
 
     /**
@@ -241,6 +248,29 @@ object ModelValidator {
             )
         }
         return null
+    }
+
+    /**
+     * A file can pass every metadata rule and still be undecodable because one tensor uses a ggml
+     * type this llama.cpp build does not implement. Reading the tensor-info table at pick time
+     * settles that here, instead of after a multi-gigabyte load ends in `invalid ggml type 142`.
+     */
+    private fun packingProblem(file: ModelFile, tensors: GgufTensorScan?): ModelValidation.Invalid? {
+        val unsupported = tensors?.unsupported ?: return null
+        val hint = when (unsupported.typeId) {
+            GgmlTensorTypes.PQ2_0, GgmlTensorTypes.PTQ1_0 ->
+                "these weights use PrismML's private packing, which the bundled upstream llama.cpp " +
+                    "cannot read. Download the Q2_0 rebuild of the same weights, or a standard Q4/Q8 GGUF"
+
+            else ->
+                "this llama.cpp build does not implement that tensor type. Download a standard " +
+                    "quantisation of the same model"
+        }
+        return ModelValidation.Invalid(
+            file,
+            ModelIssue.INCOMPATIBLE_MODEL,
+            "tensor '${unsupported.name}' is ${unsupported.label}: $hint",
+        )
     }
 
     private fun ByteArray.startsWithGgufMagic(): Boolean {

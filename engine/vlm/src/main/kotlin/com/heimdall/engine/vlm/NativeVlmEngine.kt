@@ -15,18 +15,23 @@ import kotlinx.coroutines.withContext
  * releases native memory deterministically when the service stops.
  */
 class NativeVlmEngine(
-    private val modelPath: String,
+    /**
+     * Read-only descriptor of the picked language document; the native loader duplicates it and
+     * reads the GGUF straight from it. [NO_LANGUAGE_DESCRIPTOR] means no weights are selected, so
+     * the engine only reports why it cannot run.
+     */
+    private val languageDescriptor: Int,
+    /** Path of the projector imported into app storage (`mtmd` takes a path, not a descriptor). */
     private val mmprojPath: String,
     private val config: VlmConfig = VlmConfig(),
     private val log: HeimdallLog = HeimdallLog.NONE,
     private val clock: Clock = Clock.MONOTONIC,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     /**
-     * Zero-copy document descriptors that keep [modelPath] and [mmprojPath] open, or null when the
-     * weights are ordinary files. Closed together with the engine so `/proc/self/fd/<n>` never
-     * outlives the session that resolved it.
+     * The open document behind [languageDescriptor], or null when the weights are ordinary files.
+     * Closed together with the engine so the descriptor never outlives the session that resolved it.
      */
-    private val mountedFiles: AutoCloseable? = null,
+    private val languageHandle: AutoCloseable? = null,
 ) : VlmEngine {
     private val lock = Any()
     private var initialised = false
@@ -52,7 +57,7 @@ class NativeVlmEngine(
         }
         val loaded = runCatching {
             NativeVlmBridge.nativeInit(
-                modelPath = modelPath,
+                languageFd = languageDescriptor,
                 mmprojPath = mmprojPath,
                 contextSize = config.contextSize,
                 threads = config.threads,
@@ -62,7 +67,7 @@ class NativeVlmEngine(
             .getOrDefault(false)
         if (!loaded) {
             initialisationFailure = "model rejected by llama.cpp"
-            log.error(TAG, "nativeInit returned false for $modelPath")
+            log.error(TAG, "nativeInit returned false for descriptor $languageDescriptor")
             return false
         }
         initialised = true
@@ -102,15 +107,18 @@ class NativeVlmEngine(
                     .onFailure { log.warn(TAG, "nativeRelease threw", it) }
             }
             initialised = false
-            mountedFiles?.let { mount ->
-                runCatching { mount.close() }
-                    .onFailure { log.warn(TAG, "closing model descriptors threw", it) }
+            languageHandle?.let { handle ->
+                runCatching { handle.close() }
+                    .onFailure { log.warn(TAG, "closing the language descriptor threw", it) }
             }
             log.info(TAG, "VLM released")
         }
     }
 
-    private companion object {
-        const val TAG = "NativeVlmEngine"
+    companion object {
+        /** No weights selected: [NativeVlmBridge.nativeInit] refuses the call with a reason. */
+        const val NO_LANGUAGE_DESCRIPTOR: Int = -1
+
+        private const val TAG = "NativeVlmEngine"
     }
 }

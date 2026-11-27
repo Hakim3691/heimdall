@@ -69,10 +69,17 @@ straight from wherever you downloaded them:
 
 Download them from `openbmb/MiniCPM-V-2_6` on Hugging Face in the phone browser (the app has no
 network permission, so **Get recommended model** in the app hands off to the browser) and pick each
-one with **Choose file**. The picker grants read-only access, the file is mapped through
-`/proc/self/fd/<n>`, and the raw descriptors stay open only for the capture session — nothing is
-copied, moved, uploaded or written to disk, and the files can stay in Downloads or be deleted at
-any time. Cloud-only documents are rejected because they cannot be memory-mapped.
+one with **Choose file**. The picker grants read-only access and the file is never copied, moved or
+uploaded: the language weights are read from the picked document's own descriptor, which the native
+loader duplicates and hands to llama.cpp as a `FILE*`, so nothing ever reopens `/proc/self/fd/<n>`
+(the reopen Android content providers refuse with `Permission denied`). The weights file can stay in
+Downloads or be deleted at any time.
+
+The **vision projector** is the exception: `mtmd` only takes a file path, so it is imported once
+into the app's own storage (`filesDir/models/mmproj-<hash>.gguf`, ~1 GB) the first time it is picked.
+The copy is reused for later sessions, replaced when you pick a different projector, and removed
+when you clear the app's storage; it is never re-imported per session. Cloud-only documents are
+rejected because they must be readable as a descriptor.
 
 Compatibility is a property of the **pair**, and the bundled llama.cpp + mtmd front-end supports
 more than one vision family. The GGUF metadata prefix is read at pick time:
@@ -84,9 +91,16 @@ more than one vision family. The GGUF metadata prefix is read at pick time:
 
 A file whose architecture or `clip.projector_type` is outside that table is rejected immediately,
 and so is a weights/projector pair from different families — a valid-looking but incompatible file
-no longer reports `ready` and then fails inside llama.cpp after a multi-gigabyte load. Because
-metadata can only predict, the model card's **Test pair** button loads the selection once in the
-real runtime and reports whether it works on this device; the verdict is included in diagnostics.
+no longer reports `ready` and then fails inside llama.cpp after a multi-gigabyte load. The pick-time
+scan also walks the GGUF tensor table (bounded to the first 16 MiB) and refuses a file whose tensor
+types the bundled build cannot decode, which is what settles the `PQ2_0` question before any load.
+
+Because metadata can only predict, the model card's **Test pair** button loads the selection once in
+the real runtime and reports whether it works on this device. Diagnostics keep the two verdicts
+apart: `metadata:` describes what the files claim, `runtime.pair:` is llama.cpp's own answer (or
+`not tested`), and `native:` reports the loaded library, backend and ABI. A file that cannot be
+memory-mapped — some SAF/FUSE descriptors reject `mmap` while allowing `read` — is retried once in
+`LLAMA_LOAD_MODE_NONE` instead of failing the session.
 
 ### File packing, not just architecture
 

@@ -23,6 +23,16 @@ object NativeLoadFailure {
     /** A drafter/MTP head appended to the weights (`...-MTP-...`, `blk.mtp.`). */
     private val MTP_HEAD = Regex("""(^|[^a-z])mtp([^a-z]|$)""", RegexOption.IGNORE_CASE)
 
+    /**
+     * llama.cpp could not open the weights file at all — the failure users hit when the runtime was
+     * handed a `/proc/self/fd/<n>` path instead of the descriptor itself. The loader now reads from
+     * the descriptor, so seeing this means the picker's read grant is gone (revoked, or the provider
+     * is a pipe), not that the pair is incompatible.
+     */
+    private val OPEN_FAILURE = Regex(
+        """failed to open GGUF file|Permission denied|No such file or directory""",
+    )
+
     private const val PRIVATE_PACKING =
         "these weights use PrismML's private packing (PQ2_0/PTQ1_0, ggml tensor type 142/143), " +
             "which the bundled upstream llama.cpp cannot read. Download the Q2_0 rebuild of the " +
@@ -31,6 +41,11 @@ object NativeLoadFailure {
     private const val MTP =
         "these weights carry a multi-token-prediction (MTP) drafter head that the bundled " +
             "llama.cpp does not implement. Use the non-MTP weights and test again"
+
+    private const val UNREADABLE =
+        "llama.cpp could not open the weights document, so the picker's read grant is probably " +
+            "gone (the file was moved, deleted, or the grant was revoked). Pick the file again and " +
+            "test the pair"
 
     /**
      * @param message the generic refusal from [NativeVlmBridge.lastError], used when the log has
@@ -43,6 +58,7 @@ object NativeLoadFailure {
         val known = when {
             PRIVATE_TYPE.containsMatchIn(combined) || PRIVATE_QUANT.containsMatchIn(combined) -> PRIVATE_PACKING
             MTP_HEAD.containsMatchIn(combined) -> MTP
+            OPEN_FAILURE.containsMatchIn(combined) -> UNREADABLE
             UNKNOWN_TYPE.containsMatchIn(combined) -> {
                 val type = UNKNOWN_TYPE.find(combined)?.groupValues?.get(1)
                 "these weights use a tensor packing this llama.cpp build does not know" +
