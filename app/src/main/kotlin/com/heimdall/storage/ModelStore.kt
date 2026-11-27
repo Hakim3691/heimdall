@@ -326,7 +326,8 @@ class ModelStore(
             val copied = runCatching {
                 resolver.openInputStream(uri)?.use { stream ->
                     part.outputStream().use { output -> stream.copyTo(output, COPY_BUFFER_BYTES) }
-                } != null && part.length() == size
+                } != null &&
+                    part.length() == size
             }.getOrElse { error ->
                 log.warn(TAG, "could not import the vision projector", error)
                 false
