@@ -192,10 +192,12 @@ class HeimdallCaptureService : Service() {
         // Frames seen before the engine exists are simply skipped; it stays lazy, so a failure only
         // disables inference.
         serviceScope.launch {
-            val createdEngine = graph.createEngine()
+            // Reuses the engine the setup screen already loaded and tested; loading it here only
+            // happens when the model was never brought up before the session started.
+            val createdEngine = graph.acquireEngine()
             if (!isRunning) {
-                // The session stopped while the weights were being opened: do not leak the engine.
-                runCatching { createdEngine.close() }
+                // The session stopped while the weights were being opened. The engine stays in
+                // AppGraph for the next session instead of being mapped again from scratch.
                 return@launch
             }
             engine = createdEngine
@@ -324,8 +326,12 @@ class HeimdallCaptureService : Service() {
         val manager = getSystemService(PowerManager::class.java) ?: return
         powerManager = manager
         val listener = PowerManager.OnThermalStatusChangedListener { status ->
-            graph.governor.onThermalStatus(status)
+            graph.noteThermalStatus(status)
             graph.log.info(TAG, "thermal status=$status tier=${graph.governor.tier}")
+            if (graph.governor.isExecutionPaused) {
+                // The notification says this too, but only the log explains why the overlay went quiet.
+                graph.log.warn(TAG, "inference paused by heat: ${graph.thermalSummary()}")
+            }
             updateNotification()
         }
         thermalListener = listener
@@ -367,7 +373,9 @@ class HeimdallCaptureService : Service() {
             runCatching { active.stop() }
         }
         projection = null
-        engine?.let { runCatching { it.close() } }
+        // The model is process-scoped on purpose: stopping a session must not throw away a load that
+        // took minutes, so it stays resident and AppGraph.closeEngine() is the only thing that frees
+        // it (selection change, a failed load, or process death).
         engine = null
         graph.overlay.dismiss()
         graph.cascade.reset()
