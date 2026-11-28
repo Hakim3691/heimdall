@@ -62,11 +62,19 @@ data class OverlayConfig(
     val cornerRadiusDp: Float = 22f,
     /** If true, a separate opt-in touchable chip offers expanded help. Off by default. */
     val expandedHelpEnabled: Boolean = false,
+    /**
+     * Opacity of the glass scrim behind a hint, 0.2–1.0 (the user's slider).
+     *
+     * Only the background fades: the text and the accent bar stay fully opaque, because a hint that
+     * is 40% opaque over a bright page would be unreadable rather than subtle.
+     */
+    val opacity: Float = 0.9f,
 ) {
     init {
         require(autoDismissMs > 0L) { "auto-dismiss must be positive" }
         require(maxWordCount > 0) { "word budget must be positive" }
         require(verticalInsetDp >= 0) { "inset must be non-negative" }
+        require(opacity in 0.2f..1f) { "overlay opacity must be within 0.2..1" }
     }
 }
 

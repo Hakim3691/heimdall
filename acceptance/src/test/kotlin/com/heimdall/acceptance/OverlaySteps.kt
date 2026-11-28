@@ -21,6 +21,11 @@ class OverlaySteps(private val world: World) {
         world.overlayConfig = OverlayConfig(expandedHelpEnabled = true)
     }
 
+    @Given("overlay configuration with {int}% opacity")
+    fun opacityConfig(percent: Int) {
+        world.overlayConfig = OverlayConfig(opacity = percent / 100f)
+    }
+
     @Given("an intervention anchored {word}")
     fun interventionAnchored(anchor: String) {
         val intervention = Intervention(
@@ -75,6 +80,11 @@ class OverlaySteps(private val world: World) {
     @Then("expanded help is available")
     fun expandedHelpAvailable() {
         assertThat(requireNotNull(world.spec).expandedHelpAvailable).isTrue()
+    }
+
+    @Then("the overlay spec is {int}% opaque")
+    fun opacity(percent: Int) {
+        assertThat(requireNotNull(world.spec).opacity).isEqualTo(percent / 100f)
     }
 
     @Then("the overlay spec is still not touchable")

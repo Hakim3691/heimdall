@@ -37,6 +37,20 @@ class NativeVlmEngine(
     private var initialised = false
     private var initialisationFailure: String? = null
 
+    /**
+     * Why the last load attempt failed, or null when it has not failed.
+     *
+     * The onboarding screen shows this instead of a bare "rejected": since the load is now the
+     * automatic test, its failure reason is the answer to "is the model ready?".
+     */
+    val initialisationError: String?
+        get() = synchronized(lock) { initialisationFailure }
+
+    /** llama.cpp's own log tail for the last failed load; empty when there is nothing to quote. */
+    @Volatile
+    var lastLogTail: String = ""
+        private set
+
     override val isReady: Boolean
         get() = synchronized(lock) { initialised }
 
@@ -66,7 +80,11 @@ class NativeVlmEngine(
         }.onFailure { log.error(TAG, "nativeInit threw", it) }
             .getOrDefault(false)
         if (!loaded) {
-            initialisationFailure = "model rejected by llama.cpp"
+            lastLogTail = runCatching { NativeVlmBridge.logTail() }.getOrDefault("")
+            initialisationFailure = runCatching { NativeVlmBridge.lastError() }
+                .getOrNull()
+                ?.takeIf { it.isNotBlank() }
+                ?: "model rejected by llama.cpp"
             log.error(TAG, "nativeInit returned false for descriptor $languageDescriptor")
             return false
         }
