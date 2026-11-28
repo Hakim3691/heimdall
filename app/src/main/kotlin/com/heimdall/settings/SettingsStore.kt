@@ -20,6 +20,18 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_EXPANDED_HELP, false)
         set(value) = prefs.edit().putBoolean(KEY_EXPANDED_HELP, value).apply()
 
+    /**
+     * Opacity of the hint's glass background, [MIN_OVERLAY_OPACITY]..1.
+     *
+     * Persisted because it is a personal taste that should survive a reboot: the pill sits over other
+     * apps, so how much of them shows through is the one visual choice Heimdall exposes.
+     */
+    var overlayOpacity: Float
+        get() = prefs.getFloat(KEY_OVERLAY_OPACITY, DEFAULT_OVERLAY_OPACITY)
+        set(value) = prefs.edit()
+            .putFloat(KEY_OVERLAY_OPACITY, value.coerceIn(MIN_OVERLAY_OPACITY, 1f))
+            .apply()
+
     /** True once the user has completed onboarding and started capture at least once. */
     var hasStartedCapture: Boolean
         get() = prefs.getBoolean(KEY_STARTED, false)
@@ -55,5 +67,10 @@ class SettingsStore(context: Context) {
         const val KEY_NOTIFICATION_PROMPTED = "notification_prompt_requested"
         const val KEY_PROJECTION_PROMPTED = "projection_prompt_requested"
         const val KEY_MODEL_URI = "model_uri_"
+        const val KEY_OVERLAY_OPACITY = "overlay_opacity"
+
+        /** Below this the scrim stops separating the hint from the page underneath. */
+        const val MIN_OVERLAY_OPACITY = 0.2f
+        const val DEFAULT_OVERLAY_OPACITY = 0.9f
     }
 }

@@ -32,7 +32,7 @@ internal object TooltipPillView {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = spec.let { 22f * density }
-                setColor(BACKGROUND_ARGB)
+                setColor(scrimColor(spec.opacity))
                 setStroke(dp(1, density).coerceAtLeast(1), STROKE_ARGB)
             }
             // The window is not touchable, so the view must not pretend to be clickable either.
@@ -60,6 +60,15 @@ internal object TooltipPillView {
         pill.addView(label)
         pill.contentDescription = "Heimdall hint: ${spec.text}"
         return pill
+    }
+
+    /**
+     * Fades only the glass behind the text. The text and accent bar keep their own alpha, so a low
+     * setting makes the scrim subtle instead of making the hint unreadable.
+     */
+    private fun scrimColor(opacity: Float): Int {
+        val alpha = (Color.alpha(BACKGROUND_ARGB) * opacity.coerceIn(0f, 1f)).toInt()
+        return Color.argb(alpha, Color.red(BACKGROUND_ARGB), Color.green(BACKGROUND_ARGB), Color.blue(BACKGROUND_ARGB))
     }
 
     private fun dp(value: Int, density: Float): Int = (value * density).toInt()

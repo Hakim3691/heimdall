@@ -39,3 +39,9 @@ Feature: Tooltip presentation policy
   Scenario: Copy longer than the budget is truncated
     Given an intervention with 22 words
     Then the overlay text has at most 15 words
+
+  Scenario: The glass follows the user's opacity setting
+    Given overlay configuration with 40% opacity
+    And an intervention anchored BOTTOM
+    Then the overlay spec is 40% opaque
+    And the overlay spec is still not touchable

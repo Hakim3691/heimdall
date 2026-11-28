@@ -18,6 +18,8 @@ data class OverlaySpec(
     val expandedHelpAvailable: Boolean,
     val text: String,
     val wordCount: Int,
+    /** Background opacity the user picked; the text itself is always opaque. */
+    val opacity: Float = 0.9f,
 ) {
     init {
         require(wordCount <= OverlayPolicy.MAX_WORDS) { "tooltip exceeds the word budget" }
@@ -51,6 +53,7 @@ object OverlayPolicy {
             expandedHelpAvailable = config.expandedHelpEnabled,
             text = bounded,
             wordCount = TextMetrics.countWords(bounded),
+            opacity = config.opacity,
         )
     }
 }
