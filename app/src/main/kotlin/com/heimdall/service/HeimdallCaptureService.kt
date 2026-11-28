@@ -79,6 +79,7 @@ class HeimdallCaptureService : Service() {
     @Volatile
     private var engine: VlmEngine? = null
     private var gyro: GyroMonitor? = null
+    private var engineWaitLogged = false
     private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
     private var powerManager: PowerManager? = null
 
@@ -176,6 +177,7 @@ class HeimdallCaptureService : Service() {
         )
 
         graph.session.reset()
+        engineWaitLogged = false
         // Accessibility is optional: when its service is not connected, the cascade derives
         // interactions from frame changes instead of silently never leaving the hesitation gate.
         graph.cascade.interactionEventsAvailable = HeimdallAccessibilityService.connected
@@ -224,12 +226,22 @@ class HeimdallCaptureService : Service() {
 
             val observation = graph.cascade.onFrame(analysis)
             graph.session.onFrameObserved()
+            if (graph.session.frames == 1L) {
+                graph.log.info(TAG, "first frame analysed; cascade is being evaluated every ${captureConfig.captureIntervalMs}ms")
+            }
             // The first frame only establishes the baseline; stability needs two consecutive frames.
             if (observation.hammingDistance == null) continue
 
-            if (graph.cascade.evaluate() !is GateResult.Passed) continue
-            graph.session.onGatePassed()
-            if (!graph.governor.canRunNow()) continue
+            val gateResult = graph.cascade.evaluate()
+            graph.session.onGateEvaluated(gateResult, motionDetail())
+            if (gateResult !is GateResult.Passed) continue
+            if (graph.session.gatePasses == 1L) {
+                graph.log.info(TAG, "cascade opened for the first time: handheld, hesitating and frame-stable")
+            }
+            if (!graph.governor.canRunNow()) {
+                graph.log.debug(TAG, "frame held back by the thermal governor")
+                continue
+            }
 
             evaluateFrame(analysis, vlmConfig)
         }
@@ -239,8 +251,26 @@ class HeimdallCaptureService : Service() {
         .onFailure { graph.log.warn(TAG, "acquireLatestImage failed", it) }
         .getOrNull()
 
+    /** Explains a motion refusal with the numbers the user would otherwise have to guess. */
+    private fun motionDetail(): String {
+        val motion = graph.cascade.motion
+        if (motion.assumesHandheld) return "no gyroscope, assuming handheld"
+        return "variance=${format(motion.lastVariance)} peak=${format(motion.lastPeak)} " +
+            "band=${format(graph.config.trigger.gyroVarianceMin)}..${format(graph.config.trigger.gyroVarianceMax)}"
+    }
+
+    private fun format(value: Float): String = String.format(java.util.Locale.ROOT, "%.4f", value)
+
     private suspend fun evaluateFrame(analysis: RgbImage, vlmConfig: VlmConfig) {
-        val currentEngine = engine ?: return
+        // Until the engine exists every frame is dropped; say so once instead of looking hung.
+        val currentEngine = engine
+        if (currentEngine == null) {
+            if (!engineWaitLogged) {
+                engineWaitLogged = true
+                graph.log.info(TAG, "frame dropped: the engine is still loading the weights")
+            }
+            return
+        }
         val square = ScreenFrameConverter.toSquare(analysis, vlmConfig.imageSize)
         val request = VlmRequest(image = square, prompt = PromptBuilder.build(graph.config.overlay))
 
@@ -262,6 +292,7 @@ class HeimdallCaptureService : Service() {
 
         when (val outcome = gate.gate(response.text)) {
             is VlmOutcome.Intervene -> {
+                graph.session.onVerdict("intervention: ${outcome.intervention.text}")
                 val spec = OverlayPolicy.specFor(outcome.intervention, graph.config.overlay)
                 val shown = withContext(Dispatchers.Main) { graph.overlay.show(spec) }
                 if (shown) {
@@ -274,7 +305,16 @@ class HeimdallCaptureService : Service() {
                 )
             }
 
-            is VlmOutcome.Silent -> graph.log.debug(TAG, "silent: ${outcome.reason} ${outcome.detail.orEmpty()}")
+            is VlmOutcome.Silent -> {
+                val verdict = "silent: ${outcome.reason}${outcome.detail?.let { " - $it" }.orEmpty()}"
+                graph.session.onVerdict(verdict)
+                // The first silent answer is usually the whole story of a session; make it visible.
+                if (graph.session.inferences == 1L) {
+                    graph.log.info(TAG, "first verdict: $verdict")
+                } else {
+                    graph.log.debug(TAG, verdict)
+                }
+            }
         }
     }
 
