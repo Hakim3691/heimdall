@@ -423,7 +423,7 @@ class AppGraph(context: Context) {
                 else -> "not tested for the current selection"
             },
         )
-        appendLine("model: resident=${engineResident} thermal=${thermalSummary()} rawThermalStatus=$thermalStatus")
+        appendLine("model: resident=$engineResident thermal=${thermalSummary()} rawThermalStatus=$thermalStatus")
         appendLine("overlay: ${config.overlay}")
         appendLine("trigger: ${config.trigger}")
         appendLine("runtime: sdk=${android.os.Build.VERSION.SDK_INT} device=${android.os.Build.MODEL}")
