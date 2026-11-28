@@ -25,6 +25,7 @@ import com.heimdall.settings.SettingsStore
 import com.heimdall.storage.ModelStore
 import com.heimdall.ui.overlay.OverlayWindowController
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Hand-wired object graph for the whole process. Constructed once from [HeimdallApplication].
@@ -137,11 +138,55 @@ class AppGraph(context: Context) {
     var modelProbe: String? = null
         private set
 
+    /** True when [modelProbe] is a runtime that actually loaded the selection. */
+    @Volatile
+    var probeReady: Boolean = false
+        private set
+
+    /** UI-facing state of the runtime probe; only [ProbeState.Running] is non-terminal. */
+    @Volatile
+    var probeState: ProbeState = ProbeState.Idle
+        private set
+
+    /** True while llama.cpp is loading the selection for [probeModels]. */
+    val isProbing: Boolean get() = probeState is ProbeState.Running
+
+    /** True when [modelProbe] describes the documents selected right now. */
+    val probeMatchesSelection: Boolean
+        get() = modelProbe != null && probeKey == selectionKey()
+
+    /** Seconds the running probe has been busy, 0 when it is not running. */
+    val probeElapsedSeconds: Long
+        get() = if (isProbing) ((clock.nowMs() - probeStartedAtMs) / 1_000L).coerceAtLeast(0L) else 0L
+
+    /**
+     * Result of a runtime probe, from the screen's point of view.
+     *
+     * The probe used to report only through a callback that showed a toast while loading, so a
+     * rejection that took minutes was indistinguishable from nothing happening. The screen needs a
+     * running state (with elapsed time) and a terminal verdict that carries the log tail.
+     */
+    sealed interface ProbeState {
+        /** Nothing has been probed for the current selection yet. */
+        data object Idle : ProbeState
+
+        /** llama.cpp is loading the pair. */
+        data object Running : ProbeState
+
+        /** Terminal verdict, with the runtime log tail that explains a rejection. */
+        data class Finished(
+            val message: String,
+            val ready: Boolean,
+            val nativeLog: String = "",
+        ) : ProbeState
+    }
+
     /** llama.cpp/ggml log tail of the last probe, exported with the diagnostics report. */
     @Volatile
     private var probeNativeLog: String = ""
 
     private var probeKey: String? = null
+    private var probeStartedAtMs = 0L
     private var probing = false
 
     /**
@@ -150,28 +195,38 @@ class AppGraph(context: Context) {
      * Skipped while capture owns the runtime (the probe frees it), and cached per document pair so
      * focus changes do not reload gigabytes.
      */
-    fun probeModels(onDone: (String) -> Unit = {}) {
+    fun probeModels(onDone: (ProbeState.Finished) -> Unit = {}) {
         if (HeimdallCaptureService.isRunning) {
-            onDone("runtime not tested: stop the capture session first")
+            onDone(ProbeState.Finished(PROBE_NEEDS_STOP, ready = false))
             return
         }
-        val key = ModelFile.entries.joinToString("|") { models.uriFor(it)?.toString().orEmpty() }
+        val key = selectionKey()
         synchronized(this) {
             if (probing) return
             val cached = modelProbe?.takeIf { probeKey == key }
             if (cached != null) {
-                onDone(cached)
+                onDone(ProbeState.Finished(cached, probeReady, probeNativeLog))
                 return
             }
             val issue = models.pairIssue()
             if (issue != null) {
-                val message = "runtime not tested: the GGUF metadata already rejects the pair (${issue.detail})"
-                modelProbe = message
-                probeKey = key
-                onDone(message)
+                val state = ProbeState.Finished(
+                    "runtime not tested: the GGUF metadata already rejects the pair (${issue.detail})",
+                    ready = false,
+                )
+                publishProbe(state, key)
+                onDone(state)
                 return
             }
             probing = true
+            probeKey = key
+            probeStartedAtMs = clock.nowMs()
+            probeState = ProbeState.Running
+        }
+        // The watchdog and the worker race to finish; only the first one may open a dialog.
+        val delivered = AtomicBoolean(false)
+        val deliver: (ProbeState.Finished) -> Unit = { state ->
+            if (delivered.compareAndSet(false, true)) onDone(state)
         }
         // Opening the descriptor and importing the projector are both disk work, so they happen on
         // the probe thread rather than on whichever thread tapped the button.
@@ -198,22 +253,55 @@ class AppGraph(context: Context) {
                 probe.probe.ready -> "runtime loads this pair on this device (${probe.probe.message})"
                 else -> "runtime rejected the pair: ${probe.probe.message}"
             }
+            val state = ProbeState.Finished(
+                message = message,
+                ready = probe?.probe?.ready == true,
+                nativeLog = probe?.probe?.nativeLog.orEmpty(),
+            )
             synchronized(this) {
-                modelProbe = message
-                probeNativeLog = probe?.probe?.nativeLog.orEmpty()
-                probeKey = key
+                publishProbe(state, key)
                 probing = false
             }
-            if (probe?.probe?.ready == true) {
+            if (state.ready) {
                 log.info(TAG, "model pair probe: $message")
             } else {
                 log.warn(TAG, "model pair probe: $message")
-                probe?.probe?.nativeLog.orEmpty().lineSequence()
+                state.nativeLog.lineSequence()
                     .filter { it.isNotBlank() }
                     .forEach { log.info(TAG, "llama.cpp: $it") }
             }
-            onDone(message)
+            deliver(state)
         }, "heimdall-model-probe").start()
+
+        // The native load cannot be interrupted, so this only frees the screen: it publishes a
+        // timeout verdict and leaves `probing` latched, which refuses a second load on top of a
+        // runtime that is still opening gigabytes.
+        Thread({
+            runCatching { Thread.sleep(PROBE_TIMEOUT_MS) }
+            val timedOut = synchronized(this) {
+                if (probeState is ProbeState.Running) {
+                    publishProbe(ProbeState.Finished(PROBE_TIMEOUT, ready = false), key)
+                    true
+                } else {
+                    false
+                }
+            }
+            if (timedOut) {
+                log.warn(TAG, "model pair probe timed out after ${PROBE_TIMEOUT_MS / 1_000}s")
+                deliver(ProbeState.Finished(PROBE_TIMEOUT, ready = false))
+            }
+        }, "heimdall-model-probe-watchdog").start()
+    }
+
+    private fun selectionKey(): String =
+        ModelFile.entries.joinToString("|") { models.uriFor(it)?.toString().orEmpty() }
+
+    private fun publishProbe(state: ProbeState.Finished, key: String) = synchronized(this) {
+        modelProbe = state.message
+        probeReady = state.ready
+        probeNativeLog = state.nativeLog
+        probeKey = key
+        probeState = state
     }
 
     /** Wrapper so `null` can mean "the documents could not even be opened". */
@@ -237,6 +325,13 @@ class AppGraph(context: Context) {
             appendLine()
         }
         appendLine("capture: running=${HeimdallCaptureService.isRunning} ${session.describe()}")
+        appendLine(
+            "probe: " + when {
+                isProbing -> "running for ${probeElapsedSeconds}s"
+                modelProbe != null && probeMatchesSelection -> if (probeReady) "ready" else "rejected"
+                else -> "not tested for the current selection"
+            },
+        )
         appendLine("overlay: ${config.overlay}")
         appendLine("trigger: ${config.trigger}")
         appendLine("runtime: sdk=${android.os.Build.VERSION.SDK_INT} device=${android.os.Build.MODEL}")
@@ -250,5 +345,12 @@ class AppGraph(context: Context) {
 
     private companion object {
         const val TAG = "AppGraph"
+
+        /** Generous: an 11 GB content-provider read plus one decode, on a phone. */
+        const val PROBE_TIMEOUT_MS = 180_000L
+        const val PROBE_TIMEOUT =
+            "runtime probe timed out after 3 minutes — the pair is too large for this device, or " +
+                "the file provider stalled. The llama.cpp log in the diagnostics export has the detail."
+        const val PROBE_NEEDS_STOP = "runtime not tested: stop the capture session first"
     }
 }
