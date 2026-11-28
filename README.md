@@ -95,13 +95,21 @@ no longer reports `ready` and then fails inside llama.cpp after a multi-gigabyte
 scan also walks the GGUF tensor table (bounded to the first 16 MiB) and refuses a file whose tensor
 types the bundled build cannot decode, which is what settles the `PQ2_0` question before any load.
 
-Because metadata can only predict, the model card's **Test pair** button loads the selection once in
-the real runtime and reports whether it works on this device. The result is a dialog with the
-runtime's own log tail (copyable), not a toast: the probe shows its elapsed time while loading and a
-watchdog reports a timeout after three minutes instead of leaving the button disabled forever. Diagnostics keep the two verdicts
+Because metadata can only predict, Heimdall loads the selection in the real runtime **by itself**:
+when the second file is picked, and again on every launch where a pair is already configured. There
+is no test button. The line under the file pickers reports the state — `loading 12 s…`, `Model ready
+✓ — llama.cpp loaded this pair on this device (cpu), kept in memory so hints start immediately`, or
+`Model not ready ✗` followed by the runtime's own log line — and a three-minute watchdog reports a
+timeout instead of leaving the row on "loading" forever.
+
+The engine that load produces is kept for the life of the process, so the first hint of a later
+session does not pay the multi-gigabyte mapping again: the capture service reuses the resident
+engine instead of building a second one. It is released only when the pair changes, when a load
+fails (so the next attempt starts clean) or when the process dies. Diagnostics keep the verdicts
 apart: `metadata:` describes what the files claim, `runtime.pair:` is llama.cpp's own answer (or
-`not tested`), and `native:` reports the loaded library, backend and ABI. A file that cannot be
-memory-mapped — some SAF/FUSE descriptors reject `mmap` while allowing `read` — is retried once in
+`not loaded yet`), `native:` reports the loaded library, backend and ABI, and `model:` adds whether
+the engine is resident plus the current thermal tier. A file that cannot be memory-mapped — some
+SAF/FUSE descriptors reject `mmap` while allowing `read` — is retried once in
 `LLAMA_LOAD_MODE_NONE` instead of failing the session.
 
 ### File packing, not just architecture
@@ -136,7 +144,7 @@ model picker, then the cast prompt — and explains each obstacle inline.
 
 ### Why nothing appeared on the screen
 
-The overlay is only drawn when the three-layer cascade opens. Two things made that look like a bug:
+The overlay is only drawn when the three-layer cascade opens. Several things made that look like a bug:
 
 * **Stage 1 could never pass on a hand-held phone.** The variance floor was `0.02 (rad/s)^2`, but a
   phone held still reads about `0.001–0.003`, so the cascade reported "resting on a desk" for the
@@ -149,6 +157,16 @@ The overlay is only drawn when the three-layer cascade opens. Two things made th
   exported diagnostics as `capture:` / `lastGate` / `lastVerdict`, and **Show a sample hint** renders
   the production pill directly, which separates "the permission is broken" from "the cascade never
   opened".
+* **Heat pauses inference, and only the notification said so.** `PowerManager` reports the thermal
+  status; `SEVERE` and above suspend inference entirely until the phone cools, which is right but was
+  invisible inside the app. The live line now ends with `thermal:` — the active tier and its duty
+  interval, or `PAUSED — the device is too warm`. A vision model on a phone's CPU can reach that tier
+  after a few minutes, and until now the only trace was the notification text, so "waiting for the SoC
+  to cool" looked exactly like "the overlay is broken".
+* **The hint's glass is yours to tune.** A slider under the sample-hint button sets the background
+  between 20% and 100% (default 90%) and persists it across launches. Only the scrim fades: the text
+  and the accent bar stay opaque, because fading them too would make a hint unreadable rather than
+  subtle.
 
 ### Accessibility is optional
 
