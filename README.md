@@ -10,7 +10,7 @@ network permission at all.
 | Requirement | Implementation |
 |---|---|
 | FR-01 overlay | `TYPE_APPLICATION_OVERLAY` + `FLAG_NOT_TOUCHABLE` translucent Material 3 pill, auto-dismiss after 4.5 s |
-| FR-02 trigger cascade | gyro tremor variance (0.02–1.20), hesitation ≥ 1.5 s, dHash Hamming distance ≤ 2 |
+| FR-02 trigger cascade | gyro tremor variance (0.02–1.20) or a ≥ 0.08 rad/s correction peak, hesitation ≥ 1.5 s, dHash Hamming distance ≤ 2 |
 | FR-03 local VLM | llama.cpp (pinned commit) + `mtmd` multimodal front-end, MiniCPM-V 2.6 Q4_K_M + `mmproj-f16.gguf` |
 | FR-04 frames | `MediaProjection` foreground service, downsampled surface |
 | FR-05 gating | JSON-schema gate drops `intervene == false` and low-confidence answers |
@@ -96,7 +96,9 @@ scan also walks the GGUF tensor table (bounded to the first 16 MiB) and refuses 
 types the bundled build cannot decode, which is what settles the `PQ2_0` question before any load.
 
 Because metadata can only predict, the model card's **Test pair** button loads the selection once in
-the real runtime and reports whether it works on this device. Diagnostics keep the two verdicts
+the real runtime and reports whether it works on this device. The result is a dialog with the
+runtime's own log tail (copyable), not a toast: the probe shows its elapsed time while loading and a
+watchdog reports a timeout after three minutes instead of leaving the button disabled forever. Diagnostics keep the two verdicts
 apart: `metadata:` describes what the files claim, `runtime.pair:` is llama.cpp's own answer (or
 `not tested`), and `native:` reports the loaded library, backend and ABI. A file that cannot be
 memory-mapped — some SAF/FUSE descriptors reject `mmap` while allowing `read` — is retried once in
@@ -131,6 +133,22 @@ Android does not grant any of Heimdall's privileges at install time: overlay, ac
 screen capture are Settings toggles or per-session system dialogs. The app therefore chains the
 platform screens automatically on first launch — notification permission, overlay, accessibility,
 model picker, then the cast prompt — and explains each obstacle inline.
+
+### Why nothing appeared on the screen
+
+The overlay is only drawn when the three-layer cascade opens. Two things made that look like a bug:
+
+* **Stage 1 could never pass on a hand-held phone.** The variance floor was `0.02 (rad/s)^2`, but a
+  phone held still reads about `0.001–0.003`, so the cascade reported "resting on a desk" for the
+  whole session and never reached inference. A window whose variance is under the floor but whose
+  peak exceeds `0.08 rad/s` (a hand's unavoidable corrections) now counts as handheld, while a phone
+  on a table — low variance *and* low peak — is still refused.
+* **The pipeline was silent.** The only screen now shows a live line while a session runs: frames,
+  gate passes, inferences, hints, the cascade's last refusal in words (including the measured gyro
+  variance and peak), the last model verdict, and the engine state. The same facts are in the
+  exported diagnostics as `capture:` / `lastGate` / `lastVerdict`, and **Show a sample hint** renders
+  the production pill directly, which separates "the permission is broken" from "the cascade never
+  opened".
 
 ### Accessibility is optional
 
