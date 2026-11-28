@@ -22,6 +22,7 @@ import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
@@ -41,6 +42,7 @@ import com.heimdall.model.OverlayPolicy
 import com.heimdall.model.PermissionState
 import com.heimdall.service.HeimdallAccessibilityService
 import com.heimdall.service.HeimdallCaptureService
+import kotlin.math.roundToInt
 
 /**
  * Permission onboarding and the only screen in the app.
@@ -67,6 +69,7 @@ class OnboardingActivity : Activity() {
     /** Live pipeline line and probe row, refreshed between rebuilds by [updateLiveStatus]. */
     private var pipelineLine: TextView? = null
     private var probeStatusView: TextView? = null
+    private var opacityLabel: TextView? = null
 
     private val pollHandler = Handler(Looper.getMainLooper())
     private val pollRunnable = object : Runnable {
@@ -103,6 +106,8 @@ class OnboardingActivity : Activity() {
         super.onResume()
         refreshUi()
         autoChain()
+        // An already-picked pair loads and tests itself on launch: there is no test button.
+        loadModelIfNeeded()
         // The cascade refuses frames for reasons the screen would otherwise never show.
         startPolling()
     }
@@ -177,6 +182,38 @@ class OnboardingActivity : Activity() {
             LinearLayout.LayoutParams(WRAP, WRAP).apply { bottomMargin = dp(8) },
         )
 
+        val opacityRow = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(8))
+        }
+        opacityLabel = TextView(this).apply {
+            setTextColor(TEXT_MUTED)
+            textSize = 13f
+            text = getString(R.string.onboarding_opacity_label, opacityPercent(graph.settings.overlayOpacity))
+        }
+        opacityRow.addView(opacityLabel)
+        opacityRow.addView(
+            SeekBar(this).apply {
+                max = OPACITY_STEPS
+                progress = progressFor(graph.settings.overlayOpacity)
+                setOnSeekBarChangeListener(
+                    object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                            opacityLabel?.text =
+                                getString(R.string.onboarding_opacity_label, percentFor(progress))
+                        }
+
+                        override fun onStartTrackingTouch(bar: SeekBar) = Unit
+
+                        override fun onStopTrackingTouch(bar: SeekBar) {
+                            applyOpacity(opacityFor(bar.progress))
+                        }
+                    },
+                )
+            },
+        )
+        root.addView(opacityRow)
+
         root.addView(
             Switch(this).apply {
                 text = "Offer a tappable “more” chip (opt-in)"
@@ -206,9 +243,11 @@ class OnboardingActivity : Activity() {
             Button(this).apply {
                 text = getString(R.string.onboarding_refresh)
                 setOnClickListener {
-                    // Re-read both documents instead of trusting the cached verdict.
+                    // Re-read both documents and re-run the load instead of trusting the cached verdict.
                     graph.models.invalidate()
+                    graph.invalidateProbe()
                     refreshUi()
+                    loadModelIfNeeded()
                 }
             },
             LinearLayout.LayoutParams(0, WRAP, 1f),
@@ -440,7 +479,7 @@ class OnboardingActivity : Activity() {
             },
             LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(4) },
         )
-        // The runtime probe is the only authoritative verdict: metadata can only reject what it can
+        // The runtime verdict is the only authoritative one: metadata can only reject what it can
         // prove, while llama.cpp decides whether this exact pair loads.
         probeStatusView = TextView(this).apply {
             text = probeText()
@@ -449,33 +488,56 @@ class OnboardingActivity : Activity() {
             setPadding(0, dp(8), 0, 0)
         }
         modelsContainer.addView(probeStatusView)
-        modelsContainer.addView(
-            Button(this).apply {
-                text = probeButtonText()
-                isEnabled = !graph.isProbing && bothModelsPicked() && !HeimdallCaptureService.isRunning
-                setOnClickListener { startProbe() }
-            },
-            LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(4) },
-        )
     }
 
     private fun bothModelsPicked(): Boolean =
         graph.models.uriFor(ModelFile.LANGUAGE) != null && graph.models.uriFor(ModelFile.VISION) != null
 
-    private fun probeButtonText(): String = if (graph.isProbing) {
-        getString(R.string.onboarding_probe_running_button, graph.probeElapsedSeconds)
-    } else {
-        getString(R.string.onboarding_test_pair)
+    /** True when metadata accepts both files and the pair, which is the precondition for a load. */
+    private fun modelsReady(): Boolean {
+        val validations = graph.models.validateAll()
+        return validations.values.all { it is ModelValidation.Ready } &&
+            graph.models.pairIssue(validations) == null
     }
 
-    private fun probeText(): String = when {
-        !bothModelsPicked() -> getString(R.string.onboarding_probe_none)
-        graph.isProbing -> getString(R.string.onboarding_probe_running_now, graph.probeElapsedSeconds)
-        graph.probeMatchesSelection && graph.modelProbe != null -> getString(
-            if (graph.probeReady) R.string.onboarding_probe_ready else R.string.onboarding_probe_failed,
-            graph.modelProbe.orEmpty(),
-        )
-        else -> getString(R.string.onboarding_probe_none)
+    /**
+     * The automatic test: it runs on launch, after a pick and after "Check again", never on a tap.
+     *
+     * It loads the production engine and keeps it, so a green status line is also the statement that
+     * the model is in memory and the next session will not pay the load again.
+     */
+    private fun loadModelIfNeeded() {
+        if (!modelsReady()) return
+        if (graph.isProbing || graph.probeMatchesSelection) return
+        graph.probeModels { runOnUiThread { refreshUi() } }
+        // Rebuild after the state flips to Running, so the row shows the elapsed-time counter rather
+        // than the previous verdict until the next poll tick.
+        refreshUi()
+        startPolling()
+    }
+
+    private fun probeText(): String {
+        if (!bothModelsPicked()) return getString(R.string.onboarding_probe_none)
+        if (graph.isProbing) {
+            return getString(R.string.onboarding_probe_running_now, graph.probeElapsedSeconds)
+        }
+        val message = graph.modelProbe
+        if (!graph.probeMatchesSelection || message == null) {
+            return getString(R.string.onboarding_probe_waiting)
+        }
+        if (graph.probeReady) return getString(R.string.onboarding_probe_ready, message)
+        // The refusal used to live in a dialog; inline is enough because it is now automatic, and
+        // the full log is still in the exported diagnostics.
+        val tail = graph.probeLogTail.lineSequence()
+            .filter { it.isNotBlank() }
+            .toList()
+            .takeLast(PROBE_DETAIL_LINES)
+            .joinToString("\n")
+        return if (tail.isEmpty()) {
+            getString(R.string.onboarding_probe_failed, message)
+        } else {
+            getString(R.string.onboarding_probe_failed, message + "\n" + tail)
+        }
     }
 
     private fun probeColor(): Int = when {
@@ -485,40 +547,22 @@ class OnboardingActivity : Activity() {
         else -> TEXT_FAINT
     }
 
-    private fun startProbe() {
-        // Rebuild immediately so the row shows the running state instead of a toast that vanishes.
-        refreshUi()
-        startPolling()
-        graph.probeModels { state ->
-            runOnUiThread {
-                refreshUi()
-                showProbeResult(state)
-            }
-        }
-    }
+    private fun percentFor(progress: Int): Int = OPACITY_MIN_PERCENT + progress
 
-    /**
-     * A rejection used to be a faint 12sp line, so a probe that ran for minutes looked like nothing
-     * had happened. The verdict is a dialog, with the runtime's own log tail that explains it.
-     */
-    private fun showProbeResult(state: AppGraph.ProbeState.Finished) {
-        val tail = state.nativeLog.lineSequence()
-            .filter { it.isNotBlank() }
-            .toList()
-            .takeLast(PROBE_LOG_LINES)
-            .joinToString("\n")
-        val body = if (tail.isBlank()) state.message else state.message + "\n\nllama.cpp:\n" + tail
-        AlertDialog.Builder(this)
-            .setTitle(
-                if (state.ready) R.string.onboarding_probe_ok_title else R.string.onboarding_probe_failed_title,
-            )
-            .setMessage(body)
-            .setPositiveButton(android.R.string.ok, null)
-            .setNeutralButton(R.string.onboarding_probe_copy) { _, _ ->
-                copyToClipboard("Heimdall runtime probe", body)
-                Toast.makeText(this, R.string.onboarding_probe_copied, Toast.LENGTH_SHORT).show()
-            }
-            .show()
+    private fun opacityFor(progress: Int): Float =
+        percentFor(progress).coerceIn(OPACITY_MIN_PERCENT, 100) / 100f
+
+    private fun progressFor(opacity: Float): Int =
+        ((opacity * 100).roundToInt() - OPACITY_MIN_PERCENT).coerceIn(0, OPACITY_STEPS)
+
+    private fun opacityPercent(opacity: Float): Int =
+        (opacity * 100).roundToInt().coerceIn(OPACITY_MIN_PERCENT, 100)
+
+    /** Persists the chosen opacity and re-draws a visible hint so the slider shows its effect. */
+    private fun applyOpacity(value: Float) {
+        graph.settings.overlayOpacity = value
+        graph.log.info(TAG, "overlayOpacity=$value")
+        graph.overlay.currentSpec?.let { spec -> graph.overlay.show(spec.copy(opacity = value)) }
     }
 
     private fun updateLiveStatus() {
@@ -545,7 +589,8 @@ class OnboardingActivity : Activity() {
             session.inferences,
             session.interventions,
         ) + "\n" + getString(R.string.onboarding_pipeline_gate, session.lastGate) +
-            "\nverdict: " + session.lastVerdict + "\nengine: " + session.engineStatus
+            "\nverdict: " + session.lastVerdict + "\nengine: " + session.engineStatus +
+            "\n" + getString(R.string.onboarding_pipeline_thermal, graph.thermalSummary())
     }
 
     /**
@@ -925,13 +970,9 @@ class OnboardingActivity : Activity() {
                     if (other != null) {
                         pickModel(other)
                     } else {
-                        // Both files are plausible: ask the runtime to prove the pair loads.
-                        graph.probeModels { state ->
-                            runOnUiThread {
-                                refreshUi()
-                                showProbeResult(state)
-                            }
-                        }
+                        // Both files are plausible: load and test the pair automatically.
+                        graph.invalidateProbe()
+                        loadModelIfNeeded()
                     }
                 }
             }
@@ -1029,7 +1070,9 @@ class OnboardingActivity : Activity() {
         const val REQ_PICK_VISION = 46
         const val KEY_AUTO_STEP = "com.heimdall.extra.AUTO_STEP"
         const val LIVE_STATUS_INTERVAL_MS = 1_000L
-        const val PROBE_LOG_LINES = 12
+        const val PROBE_DETAIL_LINES = 3
+        const val OPACITY_MIN_PERCENT = 20
+        const val OPACITY_STEPS = 100 - OPACITY_MIN_PERCENT
         const val RECOMMENDED_MODEL_URL = "https://huggingface.co/openbmb/MiniCPM-V-2_6-gguf"
         const val RECOMMENDED_FILE_NAMES = "ggml-model-Q4_K_M.gguf\nmmproj-model-f16.gguf"
 
