@@ -21,6 +21,13 @@ Feature: Three-layer trigger cascade
     When the cascade is evaluated
     Then the cascade blocks with reason MOTION
 
+  Scenario: A phone held steadily in a hand is handheld even without measurable tremor
+    Given the gyroscope reports a phone held still in a hand
+    And the user has not interacted for 2 seconds
+    And two identical frames have been captured
+    When the cascade is evaluated
+    Then the cascade passes
+
   Scenario: Holding the phone still without interacting opens every gate
     Given the gyroscope reports a handheld micro-tremor
     And the user has not interacted for 2 seconds

@@ -7,9 +7,16 @@ import com.heimdall.model.TriggerConfig
  *
  * Holds a ring buffer of gyroscope magnitude samples and classifies the device from their variance:
  *
- * - variance too low → the phone is resting on a desk, in a mount, or in a car dock
  * - variance too high → the user is walking, gesturing, or deliberately moving the device
  * - variance inside the band → a human is holding it still and looking at the screen
+ * - variance below the band, but a peak above [TriggerConfig.gyroMovementThreshold] → the phone is
+ *   held in a steady hand: a real grip is far quieter than the 0.02 floor, yet it still produces
+ *   small corrections that a table or a mount does not
+ * - low variance and a low peak → the phone is resting on a desk, in a mount, or in a car dock
+ *
+ * Before this peak rule existed the floor was unreachable for a hand-held phone (measured variance
+ * on a still grip is ~0.001–0.003), so stage 1 reported "resting on a desk" for the whole session
+ * and no tooltip could ever appear.
  *
  * The detector is pure: the platform adapter feeds magnitudes, so the band edges are unit-testable
  * exactly. Devices without a gyroscope call [assumeHandheld] so the later stages still gate.
@@ -19,6 +26,7 @@ class GyroTremorDetector(private val config: TriggerConfig) {
     private var writeIndex = 0
     private var sampleCount = 0
     private var varianceActive = false
+    private var peakActive = false
 
     /**
      * Set by the adapter when the hardware has no gyroscope. The cascade then relies on the
@@ -27,11 +35,15 @@ class GyroTremorDetector(private val config: TriggerConfig) {
     var assumesHandheld: Boolean = false
         private set
 
-    /** True when the last computed variance lies inside the micro-tremor band (or no sensor exists). */
-    val isHandheldActive: Boolean get() = assumesHandheld || varianceActive
+    /** True when the window is calm enough for a hand (or no sensor exists). */
+    val isHandheldActive: Boolean get() = assumesHandheld || varianceActive || peakActive
 
     /** Last computed population variance of the magnitude window, in (rad/s)^2. */
     var lastVariance: Float = 0f
+        private set
+
+    /** Largest magnitude in the current window, in rad/s. */
+    var lastPeak: Float = 0f
         private set
 
     /** True once the window holds [TriggerConfig.gyroSampleCount] samples. */
@@ -51,7 +63,11 @@ class GyroTremorDetector(private val config: TriggerConfig) {
 
     private fun recompute() {
         var sum = 0.0
-        for (value in samples) sum += value
+        var peak = 0f
+        for (value in samples) {
+            sum += value
+            if (value > peak) peak = value
+        }
         val mean = sum / samples.size
         var squaredDeviations = 0.0
         for (value in samples) {
@@ -59,7 +75,11 @@ class GyroTremorDetector(private val config: TriggerConfig) {
             squaredDeviations += delta * delta
         }
         lastVariance = (squaredDeviations / samples.size).toFloat()
+        lastPeak = peak
         varianceActive = lastVariance >= config.gyroVarianceMin && lastVariance <= config.gyroVarianceMax
+        peakActive = !varianceActive &&
+            lastVariance <= config.gyroVarianceMax &&
+            peak >= config.gyroMovementThreshold
     }
 
     /** Declares that this device has no gyroscope; [isHandheldActive] becomes unconditionally true. */
@@ -72,8 +92,10 @@ class GyroTremorDetector(private val config: TriggerConfig) {
         writeIndex = 0
         sampleCount = 0
         varianceActive = false
+        peakActive = false
         assumesHandheld = false
         lastVariance = 0f
+        lastPeak = 0f
         samples.fill(0f)
     }
 }

@@ -28,6 +28,16 @@ class TriggerSteps(private val world: World) {
         assertThat(world.cascade.motion.isHandheldActive).isFalse()
     }
 
+    @Given("the gyroscope reports a phone held still in a hand")
+    fun heldStillInHand() {
+        // A steady grip is quieter than the 0.02 floor: this window's variance is 0.0025 (rad/s)^2.
+        // The 0.11 rad/s corrections are the part a hand cannot avoid and a desk cannot produce,
+        // so the peak rule — not the variance band — is what has to recognise it.
+        repeat(SAMPLES) { index -> world.cascade.onMagnitude(if (index % 2 == 0) 0.01f else 0.11f) }
+        assertThat(world.cascade.motion.lastVariance).isLessThan(world.triggerConfig.gyroVarianceMin)
+        assertThat(world.cascade.motion.isHandheldActive).isTrue()
+    }
+
     @Given("the gyroscope reports a handheld micro-tremor")
     fun handheldTremor() {
         // Alternating 0.10 / 0.50 rad/s => variance 0.04 (rad/s)^2, inside the 0.02..1.20 band.

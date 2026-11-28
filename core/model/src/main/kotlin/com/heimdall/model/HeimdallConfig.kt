@@ -13,6 +13,17 @@ data class TriggerConfig(
     val gyroVarianceMin: Float = 0.02f,
     /** Upper variance bound (rad/s)^2 — above this the device is being moved deliberately. */
     val gyroVarianceMax: Float = 1.20f,
+    /**
+     * A single sample (rad/s) large enough to prove a hand is holding the device.
+     *
+     * The variance band alone cannot see a phone that is held still: a steady grip reports a
+     * variance around 0.001–0.003 (rad/s)^2, well under the 0.02 floor, while a phone lying on a
+     * table reports both a low variance *and* a low peak. A hand always produces small corrections
+     * of a few degrees per second, so a peak in the window above this floor is what distinguishes
+     * "held" from "mounted or on a desk". Above [gyroVarianceMax] the device counts as carried or
+     * deliberately moved, regardless of its peak.
+     */
+    val gyroMovementThreshold: Float = 0.08f,
     /** Uninterrupted UI inactivity that counts as hesitation (TRD: 1.5 s). */
     val hesitationThresholdMs: Long = 1_500L,
     /** Consecutive-frame dHash Hamming distance at or below which the screen counts as static. */
@@ -32,6 +43,7 @@ data class TriggerConfig(
         require(gyroSampleCount > 1) { "gyro sample window must hold at least two samples" }
         require(gyroVarianceMin >= 0f) { "variance floor must be non-negative" }
         require(gyroVarianceMax > gyroVarianceMin) { "variance ceiling must exceed the floor" }
+        require(gyroMovementThreshold >= 0f) { "movement threshold must be non-negative" }
         require(hesitationThresholdMs > 0L) { "hesitation threshold must be positive" }
         require(frameHashMaxHammingDistance in 0..64) { "dHash distance must fit a 64-bit hash" }
         require(postInterventionCooldownMs >= 0L) { "cooldown must be non-negative" }
