@@ -14,6 +14,8 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -28,11 +30,14 @@ import com.heimdall.AppGraph
 import com.heimdall.BuildConfig
 import com.heimdall.HeimdallApplication
 import com.heimdall.R
+import com.heimdall.model.Anchor
+import com.heimdall.model.Intervention
 import com.heimdall.model.ModelFile
 import com.heimdall.model.ModelIssue
 import com.heimdall.model.ModelValidation
 import com.heimdall.model.OnboardingState
 import com.heimdall.model.OnboardingStep
+import com.heimdall.model.OverlayPolicy
 import com.heimdall.model.PermissionState
 import com.heimdall.service.HeimdallAccessibilityService
 import com.heimdall.service.HeimdallCaptureService
@@ -59,6 +64,25 @@ class OnboardingActivity : Activity() {
 
     private var notificationDialogInFlight = false
 
+    /** Live pipeline line and probe row, refreshed between rebuilds by [updateLiveStatus]. */
+    private var pipelineLine: TextView? = null
+    private var probeStatusView: TextView? = null
+
+    private val pollHandler = Handler(Looper.getMainLooper())
+    private val pollRunnable = object : Runnable {
+        override fun run() {
+            updateLiveStatus()
+            if (HeimdallCaptureService.isRunning || graph.isProbing) {
+                pollHandler.postDelayed(this, LIVE_STATUS_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun startPolling() {
+        pollHandler.removeCallbacks(pollRunnable)
+        pollHandler.post(pollRunnable)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         graph = (application as HeimdallApplication).graph
@@ -79,6 +103,13 @@ class OnboardingActivity : Activity() {
         super.onResume()
         refreshUi()
         autoChain()
+        // The cascade refuses frames for reasons the screen would otherwise never show.
+        startPolling()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        pollHandler.removeCallbacks(pollRunnable)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -130,6 +161,21 @@ class OnboardingActivity : Activity() {
             setPadding(0, dp(12), 0, dp(12))
         }
         root.addView(statusLine)
+
+        pipelineLine = TextView(this).apply {
+            setTextColor(TEXT_MUTED)
+            textSize = 12f
+            setPadding(0, 0, 0, dp(12))
+        }
+        root.addView(pipelineLine)
+
+        root.addView(
+            Button(this).apply {
+                text = getString(R.string.onboarding_sample_hint)
+                setOnClickListener { showSampleHint() }
+            },
+            LinearLayout.LayoutParams(WRAP, WRAP).apply { bottomMargin = dp(8) },
+        )
 
         root.addView(
             Switch(this).apply {
@@ -237,6 +283,7 @@ class OnboardingActivity : Activity() {
                 append(getString(R.string.onboarding_missing_models, problems.joinToString("; ")))
             }
         }
+        updateLiveStatus()
     }
 
     /**
@@ -395,31 +442,132 @@ class OnboardingActivity : Activity() {
         )
         // The runtime probe is the only authoritative verdict: metadata can only reject what it can
         // prove, while llama.cpp decides whether this exact pair loads.
-        modelsContainer.addView(
-            TextView(this).apply {
-                text = graph.modelProbe ?: getString(R.string.onboarding_probe_none)
-                setTextColor(TEXT_FAINT)
-                textSize = 12f
-                setPadding(0, dp(8), 0, 0)
-            },
-        )
+        probeStatusView = TextView(this).apply {
+            text = probeText()
+            setTextColor(probeColor())
+            textSize = 12f
+            setPadding(0, dp(8), 0, 0)
+        }
+        modelsContainer.addView(probeStatusView)
         modelsContainer.addView(
             Button(this).apply {
-                text = getString(R.string.onboarding_test_pair)
-                isEnabled = graph.models.uriFor(ModelFile.LANGUAGE) != null &&
-                    graph.models.uriFor(ModelFile.VISION) != null &&
-                    !HeimdallCaptureService.isRunning
-                setOnClickListener {
-                    Toast.makeText(
-                        this@OnboardingActivity,
-                        R.string.onboarding_probe_running,
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                    graph.probeModels { runOnUiThread { refreshUi() } }
-                }
+                text = probeButtonText()
+                isEnabled = !graph.isProbing && bothModelsPicked() && !HeimdallCaptureService.isRunning
+                setOnClickListener { startProbe() }
             },
             LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(4) },
         )
+    }
+
+    private fun bothModelsPicked(): Boolean =
+        graph.models.uriFor(ModelFile.LANGUAGE) != null && graph.models.uriFor(ModelFile.VISION) != null
+
+    private fun probeButtonText(): String = if (graph.isProbing) {
+        getString(R.string.onboarding_probe_running_button, graph.probeElapsedSeconds)
+    } else {
+        getString(R.string.onboarding_test_pair)
+    }
+
+    private fun probeText(): String = when {
+        !bothModelsPicked() -> getString(R.string.onboarding_probe_none)
+        graph.isProbing -> getString(R.string.onboarding_probe_running_now, graph.probeElapsedSeconds)
+        graph.probeMatchesSelection && graph.modelProbe != null -> getString(
+            if (graph.probeReady) R.string.onboarding_probe_ready else R.string.onboarding_probe_failed,
+            graph.modelProbe.orEmpty(),
+        )
+        else -> getString(R.string.onboarding_probe_none)
+    }
+
+    private fun probeColor(): Int = when {
+        graph.isProbing -> ACCENT
+        graph.probeMatchesSelection && graph.probeReady -> ACCENT
+        graph.probeMatchesSelection && graph.modelProbe != null -> WARN
+        else -> TEXT_FAINT
+    }
+
+    private fun startProbe() {
+        // Rebuild immediately so the row shows the running state instead of a toast that vanishes.
+        refreshUi()
+        startPolling()
+        graph.probeModels { state ->
+            runOnUiThread {
+                refreshUi()
+                showProbeResult(state)
+            }
+        }
+    }
+
+    /**
+     * A rejection used to be a faint 12sp line, so a probe that ran for minutes looked like nothing
+     * had happened. The verdict is a dialog, with the runtime's own log tail that explains it.
+     */
+    private fun showProbeResult(state: AppGraph.ProbeState.Finished) {
+        val tail = state.nativeLog.lineSequence()
+            .filter { it.isNotBlank() }
+            .toList()
+            .takeLast(PROBE_LOG_LINES)
+            .joinToString("\n")
+        val body = if (tail.isBlank()) state.message else state.message + "\n\nllama.cpp:\n" + tail
+        AlertDialog.Builder(this)
+            .setTitle(
+                if (state.ready) R.string.onboarding_probe_ok_title else R.string.onboarding_probe_failed_title,
+            )
+            .setMessage(body)
+            .setPositiveButton(android.R.string.ok, null)
+            .setNeutralButton(R.string.onboarding_probe_copy) { _, _ ->
+                copyToClipboard("Heimdall runtime probe", body)
+                Toast.makeText(this, R.string.onboarding_probe_copied, Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun updateLiveStatus() {
+        pipelineLine?.text = pipelineText()
+        probeStatusView?.let { view ->
+            view.text = probeText()
+            view.setTextColor(probeColor())
+        }
+    }
+
+    /**
+     * The single line that answers "why is nothing appearing?": the cascade's last verdict, the
+     * engine state and what the model last said (or why its answer was dropped).
+     */
+    private fun pipelineText(): String {
+        val session = graph.session
+        if (!HeimdallCaptureService.isRunning) {
+            return getString(R.string.onboarding_pipeline_idle)
+        }
+        return getString(
+            R.string.onboarding_pipeline_state,
+            session.frames,
+            session.gatePasses,
+            session.inferences,
+            session.interventions,
+        ) + "\n" + getString(R.string.onboarding_pipeline_gate, session.lastGate) +
+            "\nverdict: " + session.lastVerdict + "\nengine: " + session.engineStatus
+    }
+
+    /**
+     * Renders a real pill through the production overlay path, so "the toggle is on but nothing is
+     * ever drawn" can be told apart from "the trigger cascade never opened".
+     */
+    private fun showSampleHint() {
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, R.string.onboarding_sample_hint_needs_overlay, Toast.LENGTH_LONG).show()
+            openOverlaySettings()
+            return
+        }
+        val spec = OverlayPolicy.specFor(
+            Intervention(getString(R.string.onboarding_sample_text), confidence = 1f, anchor = Anchor.BOTTOM),
+            graph.config.overlay,
+        )
+        val shown = graph.overlay.show(spec)
+        Toast.makeText(
+            this,
+            if (shown) R.string.onboarding_sample_hint_shown else R.string.onboarding_sample_hint_failed,
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 
     private fun buildModelRow(file: ModelFile, validation: ModelValidation): View {
@@ -778,7 +926,12 @@ class OnboardingActivity : Activity() {
                         pickModel(other)
                     } else {
                         // Both files are plausible: ask the runtime to prove the pair loads.
-                        graph.probeModels { runOnUiThread { refreshUi() } }
+                        graph.probeModels { state ->
+                            runOnUiThread {
+                                refreshUi()
+                                showProbeResult(state)
+                            }
+                        }
                     }
                 }
             }
@@ -875,6 +1028,8 @@ class OnboardingActivity : Activity() {
         const val REQ_PICK_LANGUAGE = 45
         const val REQ_PICK_VISION = 46
         const val KEY_AUTO_STEP = "com.heimdall.extra.AUTO_STEP"
+        const val LIVE_STATUS_INTERVAL_MS = 1_000L
+        const val PROBE_LOG_LINES = 12
         const val RECOMMENDED_MODEL_URL = "https://huggingface.co/openbmb/MiniCPM-V-2_6-gguf"
         const val RECOMMENDED_FILE_NAMES = "ggml-model-Q4_K_M.gguf\nmmproj-model-f16.gguf"
 
